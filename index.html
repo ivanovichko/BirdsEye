@@ -117,21 +117,21 @@
   .actions-col .btn {
     justify-content: flex-start;
     width: 100%;
-    background: rgba(13, 11, 8, 0.72);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   .actions-col .btn:hover {
-    background: rgba(239, 159, 39, 0.25);
+    background: rgba(239, 159, 39, 0.15);
   }
 
   .actions-col .btn-primary {
-    background: linear-gradient(180deg, var(--amber-400) 0%, var(--amber-600) 100%);
+    background: transparent;
   }
 
   .actions-col .btn-primary:hover {
-    background: linear-gradient(180deg, var(--amber-200) 0%, var(--amber-400) 100%);
+    background: rgba(239, 159, 39, 0.2);
   }
 
   /* ===== BUTTONS ===== */
@@ -264,12 +264,12 @@
 
   /* ===== TERMINAL (right side of overlay) ===== */
   .terminal {
-    background: rgba(13, 11, 8, 0.78);
+    background: transparent;
     border: 1px solid var(--border-strong);
     border-radius: 10px;
     overflow: hidden;
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -280,7 +280,7 @@
     align-items: center;
     justify-content: space-between;
     padding: 8px 12px;
-    background: rgba(186, 117, 23, 0.15);
+    background: transparent;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
