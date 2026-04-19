@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Scentbird CRM - Token Helper
+// @name         BirdsEye - Token Helper
 // @namespace    scentbird-kustomer
 // @version      1.0
 // @description  Adds a "Copy Token" button on crm.scentbird.com for easy token capture

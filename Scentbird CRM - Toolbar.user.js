@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Scentbird CRM - Toolbar
+// @name         BirdsEye
 // @namespace    scentbird-kustomer
 // @version      8.7
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
