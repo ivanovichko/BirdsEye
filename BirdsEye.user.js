@@ -10,8 +10,8 @@
 // @connect      crm.scentbird.com
 // @connect      www.scentbird.com
 // @connect      api.scentbird.com
-// @updateURL    https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/Scentbird%20CRM%20-%20Toolbar.user.js
-// @downloadURL  https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/Scentbird%20CRM%20-%20Toolbar.user.js
+// @updateURL    https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/BirdsEye.user.js
+// @downloadURL  https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/BirdsEye.user.js
 // ==/UserScript==
 
 (function () {

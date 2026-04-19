@@ -5,8 +5,8 @@
 // @description  Adds a "Copy Token" button on crm.scentbird.com for easy token capture
 // @author       You
 // @match        https://crm.scentbird.com/*
-// @updateURL    https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/Scentbird%20CRM%20-%20Token%20Helper.user.js
-// @downloadURL  https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/Scentbird%20CRM%20-%20Token%20Helper.user.js
+// @updateURL    https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/BirdsEye%20-%20Token%20Helper.user.js
+// @downloadURL  https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/BirdsEye%20-%20Token%20Helper.user.js
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
