@@ -512,7 +512,7 @@
                 paymentMethod { methodName type }
               }
               refundAmount
-              orders { id }
+              orders { id status warehouseOrder { data { status } } }
             }
           }
         }
@@ -3263,10 +3263,14 @@
         // Refund button
         const hasCreditsFlag = credits.length > 0 || shippingCredits.length > 0;
         const lineItemsForRefund = invoice?.lineItems || [];
-        const canRefund = hasCreditsFlag || lineItemsForRefund.length > 0;
+        const linkedOrder = charge?.orders?.[0];
+        const orderStatus = (linkedOrder?.warehouseOrder?.data?.status || linkedOrder?.status || '').toUpperCase();
+        const orderIsNonRefundable = orderStatus && NON_REFUNDABLE_STATUSES.includes(orderStatus);
+        const canRefund = (hasCreditsFlag || lineItemsForRefund.length > 0) && !orderIsNonRefundable;
         const refBtn = document.createElement('button');
         refBtn.textContent = 'Refund ' + fmtMoney(totalCents, currency);
         refBtn.disabled = !canRefund;
+        refBtn.title = orderIsNonRefundable ? 'Order is already ' + orderStatus : '';
         refBtn.style.cssText = `
           width:100%;padding:7px;border-radius:6px;border:none;margin-top:4px;
           font-weight:700;font-size:12px;cursor:${canRefund ? 'pointer' : 'not-allowed'};
@@ -3277,7 +3281,7 @@
         if (canRefund) {
           refBtn.onmouseenter = () => refBtn.style.background = '#6d28d9';
           refBtn.onmouseleave = () => refBtn.style.background = '#7c3aed';
-          const orderId = charge?.orders?.[0]?.id || null;
+          const orderId = linkedOrder?.id || null;
           refBtn.onclick = () => showRefundConfirmDialog(user, charge, credits, shippingCredits, currency, totalCents, refBtn, block, orderId);
         }
         block.appendChild(refBtn);
