@@ -469,7 +469,7 @@
       userSearch(input: $input) {
         total
         data { id email firstName lastName origin
-          userAddress { shipping { street1 city region postcode } }
+          userAddress { shipping { street1 city region postcode country } }
           subscription { id status }
         }
       }
@@ -4933,7 +4933,27 @@
 
     if (group2.children.length) bar.appendChild(group2);
 
-    // Group 3: Warnings (addr, fraud, chargeback — fraud/chargeback appended async)
+    // Group 3: Location tags (Canada, UK, Hawaii/Alaska/Puerto Rico)
+    const shipping = cachedCustomerCtx?.user?.userAddress?.shipping;
+    if (shipping) {
+      const country = (shipping.country || '').trim().toUpperCase();
+      const region  = (shipping.region  || '').trim().toUpperCase();
+      const locationGroup = makeGroup();
+      if (country === 'CA' || country === 'CAN' || country === 'CANADA') {
+        locationGroup.appendChild(makeTag('🍁 Canada', '#f59e0b', 'rgba(245,158,11,0.1)', 'rgba(245,158,11,0.25)'));
+      } else if (country === 'GB' || country === 'UK' || country === 'UNITED KINGDOM') {
+        locationGroup.appendChild(makeTag('🇬🇧 UK', '#60a5fa', 'rgba(96,165,250,0.1)', 'rgba(96,165,250,0.25)'));
+      } else if (['HI', 'HAWAII'].includes(region)) {
+        locationGroup.appendChild(makeTag('🌺 Hawaii', '#f472b6', 'rgba(244,114,182,0.1)', 'rgba(244,114,182,0.25)'));
+      } else if (['AK', 'ALASKA'].includes(region)) {
+        locationGroup.appendChild(makeTag('🏔 Alaska', '#94a3b8', 'rgba(148,163,184,0.1)', 'rgba(148,163,184,0.25)'));
+      } else if (['PR', 'PUERTO RICO'].includes(region)) {
+        locationGroup.appendChild(makeTag('🌴 Puerto Rico', '#34d399', 'rgba(52,211,153,0.1)', 'rgba(52,211,153,0.25)'));
+      }
+      if (locationGroup.children.length) bar.appendChild(locationGroup);
+    }
+
+    // Group 4: Warnings (addr, fraud, chargeback — fraud/chargeback appended async)
     const group3 = makeGroup();
     group3.id = 'sb-info-group-warnings';
     group3.style.display = 'none'; // hidden until a warning is added
