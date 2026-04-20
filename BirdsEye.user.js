@@ -460,6 +460,24 @@
     }
   }
 
+  /** Fetch all emails + phone numbers from Kustomer for the current customer. */
+  async function resolveKustomerAttributes() {
+    const customerId = cachedCustomerCtx?._kustomerId || getCustomerIdFromURL();
+    if (!customerId) return null;
+    try {
+      const res = await fetch(`https://scentbird.api.kustomerapp.com/v1/customers/${customerId}`, {
+        credentials: 'include',
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!res.ok) return null;
+      const attrs = (await res.json())?.data?.attributes;
+      return {
+        emails: (attrs?.emails || []).map(e => e.email).filter(Boolean),
+        phones: (attrs?.phones || []).map(p => p.phone).filter(Boolean),
+      };
+    } catch(e) { return null; }
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // GRAPHQL QUERIES & MUTATIONS (single source of truth)
   // ══════════════════════════════════════════════════════════════════════════
@@ -1400,94 +1418,162 @@
 
     const results = document.createElement('div');
 
+    function renderUsers(users, headerText) {
+      results.innerHTML = '';
+      if (headerText) {
+        const hdr = document.createElement('div');
+        hdr.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:12px;';
+        hdr.textContent = headerText;
+        results.appendChild(hdr);
+      }
+      users.forEach(user => {
+        const card = document.createElement('div');
+        card.dataset.subStatus = user.subscription?.status || '';
+        card.style.cssText = `
+          padding:10px;margin-bottom:8px;border-radius:8px;background:#2a2a3e;
+          border:1px solid transparent;transition:0.15s;
+        `;
+        if (filterActive && card.dataset.subStatus !== 'Active' && card.dataset.subStatus !== 'Unpaid' && card.dataset.subStatus !== 'OnHold') card.style.display = 'none';
+        const s = user.userAddress?.shipping;
+        const addr = s ? [s.street1,s.city,s.region,s.postcode].filter(Boolean).join(', ') : '';
+        const subSt = user.subscription?.status || '';
+        const subColor = subSt === 'Active' ? '#6ee7b7' : subSt ? '#fca5a5' : '#64748b';
+        const subLabel = subSt || 'No subscription';
+        const isDrift = user.origin && user.origin !== 'SCENTBIRD';
+        if (isDrift) card.style.opacity = '0.5';
+        card.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:baseline;">
+            <div style="font-weight:700;">${user.firstName||''} ${user.lastName||''} ${isDrift ? '<span style="font-size:10px;color:#f59e0b;font-weight:600;background:rgba(245,158,11,0.15);padding:1px 5px;border-radius:3px;margin-left:4px;">' + user.origin + '</span>' : ''}</div>
+            <div style="font-size:11px;font-weight:600;color:${subColor};">${subLabel}</div>
+          </div>
+          <div style="color:#94a3b8;margin-top:2px;">${user.email}</div>
+          <div style="color:#64748b;font-size:11px;margin-top:2px;">ID: ${user.id}</div>
+          ${addr ? `<div style="color:#64748b;font-size:11px;margin-top:2px;">${addr}</div>` : ''}
+          <div style="margin-top:8px;display:flex;gap:6px;">
+            <button class="sb-apply" style="padding:4px 12px;border-radius:5px;border:none;background:#4f46e5;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">Apply to Kustomer</button>
+            <a class="sb-profile" href="https://crm.scentbird.com/user/${user.id}/profile/subscription" target="_blank" style="padding:4px 12px;border-radius:5px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#e2e8f0;font-size:12px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;">Open Profile</a>
+          </div>
+        `;
+        card.onmouseenter = () => card.style.borderColor = 'rgba(79,70,229,0.5)';
+        card.onmouseleave = () => card.style.borderColor = 'transparent';
+
+        const applyBtn = card.querySelector('.sb-apply');
+        if (isDrift) {
+          applyBtn.disabled = true;
+          applyBtn.style.opacity = '0.4';
+          applyBtn.style.cursor = 'not-allowed';
+          applyBtn.title = 'Drift account — cannot apply';
+        } else {
+          applyBtn.onclick = async (e) => {
+            const btn = e.target; btn.textContent = '⏳ Applying…'; btn.disabled = true;
+            await applyUser(user);
+            await new Promise(r => setTimeout(r, 500));
+            cachedCustomerCtx = { email: user.email.trim().toLowerCase(), user, _kustomerId: getCustomerIdFromURL() };
+            btn.textContent = '✔ Done'; btn.style.background = '#059669';
+            setTimeout(() => removePanel('sb-search-panel'), 1500);
+            const fillBtn = document.getElementById('sb-fill-name-btn');
+            if (fillBtn && !fillBtn.disabled) fillBtn.click();
+          };
+        }
+
+        const orderEl = document.createElement('div');
+        orderEl.style.cssText = 'margin-top:8px;font-size:11px;color:#64748b;';
+        card.appendChild(orderEl);
+
+        if (!isDrift) {
+          orderEl.textContent = '⏳ Loading orders…';
+          fetchLastOrders(user.id, (orders) => {
+            orderEl.innerHTML = '';
+            if (!orders?.length) return;
+            const mainOrder = orders.find(o => o.type !== 'REPLACEMENT' && o.type !== 'REPLACEMENT_ORDER') || orders[0];
+            orderEl.appendChild(renderOrderBlock(mainOrder, true));
+          });
+        }
+
+        results.appendChild(card);
+      });
+    }
+
     function doSearch() {
       const q = input.value.trim(); if (!q) return;
       results.innerHTML = `<div style="color:#94a3b8;padding:8px 0;">Searching…</div>`;
       searchCRM(q, (users, err) => {
-        results.innerHTML = '';
         if (err) { results.innerHTML = `<div style="color:#fca5a5;padding:8px 0;">${err}</div>`; return; }
         if (!users.length) { results.innerHTML = `<div style="color:#94a3b8;padding:8px 0;">No users found.</div>`; return; }
-
-        const count = document.createElement('div');
-        count.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:12px;';
-        count.textContent = `${users.length} result(s)`;
-        results.appendChild(count);
-
-        users.forEach(user => {
-          const card = document.createElement('div');
-          card.dataset.subStatus = user.subscription?.status || '';
-          card.style.cssText = `
-            padding:10px;margin-bottom:8px;border-radius:8px;background:#2a2a3e;
-            border:1px solid transparent;transition:0.15s;
-          `;
-          if (filterActive && card.dataset.subStatus !== 'Active' && card.dataset.subStatus !== 'Unpaid' && card.dataset.subStatus !== 'OnHold') card.style.display = 'none';
-          const s = user.userAddress?.shipping;
-          const addr = s ? [s.street1,s.city,s.region,s.postcode].filter(Boolean).join(', ') : '';
-          const subSt = user.subscription?.status || '';
-          const subColor = subSt === 'Active' ? '#6ee7b7' : subSt ? '#fca5a5' : '#64748b';
-          const subLabel = subSt || 'No subscription';
-          const isDrift = user.origin && user.origin !== 'SCENTBIRD';
-          if (isDrift) card.style.opacity = '0.5';
-          card.innerHTML = `
-            <div style="display:flex;justify-content:space-between;align-items:baseline;">
-              <div style="font-weight:700;">${user.firstName||''} ${user.lastName||''} ${isDrift ? '<span style="font-size:10px;color:#f59e0b;font-weight:600;background:rgba(245,158,11,0.15);padding:1px 5px;border-radius:3px;margin-left:4px;">' + user.origin + '</span>' : ''}</div>
-              <div style="font-size:11px;font-weight:600;color:${subColor};">${subLabel}</div>
-            </div>
-            <div style="color:#94a3b8;margin-top:2px;">${user.email}</div>
-            <div style="color:#64748b;font-size:11px;margin-top:2px;">ID: ${user.id}</div>
-            ${addr ? `<div style="color:#64748b;font-size:11px;margin-top:2px;">${addr}</div>` : ''}
-            <div style="margin-top:8px;display:flex;gap:6px;">
-              <button class="sb-apply" style="padding:4px 12px;border-radius:5px;border:none;background:#4f46e5;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">Apply to Kustomer</button>
-              <a class="sb-profile" href="https://crm.scentbird.com/user/${user.id}/profile/subscription" target="_blank" style="padding:4px 12px;border-radius:5px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#e2e8f0;font-size:12px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;">Open Profile</a>
-            </div>
-          `;
-          card.onmouseenter = () => card.style.borderColor = 'rgba(79,70,229,0.5)';
-          card.onmouseleave = () => card.style.borderColor = 'transparent';
-
-          const applyBtn = card.querySelector('.sb-apply');
-          if (isDrift) {
-            applyBtn.disabled = true;
-            applyBtn.style.opacity = '0.4';
-            applyBtn.style.cursor = 'not-allowed';
-            applyBtn.title = 'Drift account — cannot apply';
-          } else {
-            applyBtn.onclick = async (e) => {
-              const btn = e.target; btn.textContent = '⏳ Applying…'; btn.disabled = true;
-              await applyUser(user);
-              await new Promise(r => setTimeout(r, 500));
-              cachedCustomerCtx = { email: user.email.trim().toLowerCase(), user, _kustomerId: getCustomerIdFromURL() };
-              btn.textContent = '✔ Done'; btn.style.background = '#059669';
-              setTimeout(() => removePanel('sb-search-panel'), 1500);
-              // Auto-trigger Fill Name
-              const fillBtn = document.getElementById('sb-fill-name-btn');
-              if (fillBtn && !fillBtn.disabled) fillBtn.click();
-            };
-          }
-
-          // Last order preview (skip Drift)
-          const orderEl = document.createElement('div');
-          orderEl.style.cssText = 'margin-top:8px;font-size:11px;color:#64748b;';
-          card.appendChild(orderEl);
-
-          if (!isDrift) {
-            orderEl.textContent = '⏳ Loading orders…';
-            fetchLastOrders(user.id, (orders) => {
-              orderEl.innerHTML = '';
-              if (!orders?.length) return;
-              const mainOrder = orders.find(o => o.type !== 'REPLACEMENT' && o.type !== 'REPLACEMENT_ORDER') || orders[0];
-              orderEl.appendChild(renderOrderBlock(mainOrder, true));
-            });
-          }
-
-          results.appendChild(card);
-        });
+        renderUsers(users, `${users.length} result(s)`);
       });
     }
+
+    // Find Other Accounts button
+    const findOtherBtn = document.createElement('button');
+    findOtherBtn.textContent = '🔎 Find Other Accounts';
+    findOtherBtn.style.cssText = `
+      width:100%;padding:7px;border-radius:6px;border:1px solid rgba(148,163,184,0.25);
+      background:transparent;color:#94a3b8;font-weight:600;font-size:12px;
+      cursor:pointer;margin-bottom:10px;
+    `;
+    findOtherBtn.onmouseenter = () => findOtherBtn.style.background = 'rgba(148,163,184,0.08)';
+    findOtherBtn.onmouseleave = () => findOtherBtn.style.background = 'transparent';
+    findOtherBtn.onclick = async () => {
+      findOtherBtn.disabled = true;
+      findOtherBtn.textContent = '⏳ Searching…';
+      results.innerHTML = '';
+
+      const terms = [];
+      const termLabels = [];
+      const currentUser = cachedCustomerCtx?.user;
+
+      const street1 = currentUser?.userAddress?.shipping?.street1;
+      if (street1) { terms.push(street1); termLabels.push('address'); }
+
+      const fullName = [currentUser?.firstName, currentUser?.lastName].filter(Boolean).join(' ');
+      if (fullName) { terms.push(fullName); termLabels.push('name'); }
+
+      const kAttrs = await resolveKustomerAttributes();
+      const primaryEmail = cachedCustomerCtx?.email;
+      if (kAttrs?.emails?.length) {
+        const altEmails = kAttrs.emails.filter(e => e.toLowerCase() !== (primaryEmail || '').toLowerCase());
+        altEmails.forEach(e => terms.push(e));
+        if (altEmails.length) termLabels.push('email');
+      }
+      if (kAttrs?.phones?.length) {
+        kAttrs.phones.forEach(p => terms.push(p));
+        termLabels.push('phone');
+      }
+
+      if (!terms.length) {
+        results.innerHTML = `<div style="color:#94a3b8;padding:8px 0;">No search terms available — load a customer first.</div>`;
+        findOtherBtn.disabled = false; findOtherBtn.textContent = '🔎 Find Other Accounts';
+        return;
+      }
+
+      // Run searches sequentially, collect unique results excluding current account
+      const seen = new Map();
+      const currentId = currentUser?.id;
+      for (const term of terms) {
+        await new Promise(resolve => {
+          searchCRM(term, (users, err) => {
+            if (!err && users?.length) {
+              users.forEach(u => { if (u.id !== currentId && !seen.has(u.id)) seen.set(u.id, u); });
+            }
+            resolve();
+          });
+        });
+      }
+
+      findOtherBtn.disabled = false; findOtherBtn.textContent = '🔎 Find Other Accounts';
+      if (!seen.size) {
+        results.innerHTML = `<div style="color:#94a3b8;padding:8px 0;">No other accounts found.</div>`;
+        return;
+      }
+      const found = Array.from(seen.values());
+      renderUsers(found, `Found ${found.length} other account(s) via: ${termLabels.join(' · ')}`);
+    };
 
     searchBtn.onclick = doSearch;
     input.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
     row.appendChild(input); row.appendChild(searchBtn); row.appendChild(filterBtn);
-    panel.appendChild(row); panel.appendChild(results);
+    panel.appendChild(row); panel.appendChild(findOtherBtn); panel.appendChild(results);
     if (prefill) doSearch();
     setTimeout(() => input.focus(), 50);
   }
