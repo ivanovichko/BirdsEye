@@ -2329,41 +2329,47 @@
                 if (extra) commentParts.push(extra);
                 const commentText = commentParts.join('\n');
 
-                fetchComments(user.id, (comments) => {
-                  const autoComment = comments.find(c =>
-                    c.comment && csOrderNumber && c.comment.includes(csOrderNumber)
+                const postComment = () => {
+                  confStatus.textContent = 'Posting comment...';
+                  gqlMutate('createUserComment', CREATE_COMMENT_MUTATION,
+                    { input: { userId: user.id, comment: commentText, zendeskUrl: window.location.href } },
+                    () => {
+                      confStatus.style.color = '#6ee7b7';
+                      confStatus.textContent = '\u2714 Custom shipment created!';
+                      cBtn.textContent = '\u2714 Done';
+                      confirmBtn.disabled = true;
+                      confirmBtn.textContent = '\u2714 Created';
+                      confirmBtn.style.background = 'rgba(110,231,183,0.15)';
+                      confirmBtn.style.color = '#6ee7b7';
+                      setTimeout(() => {
+                        confOverlay.remove();
+                        overlay.remove();
+                        document.getElementById('sb-product-search-panel')?.remove();
+                      }, 1800);
+                    }
                   );
+                };
 
-                  const postComment = () => {
-                    confStatus.textContent = 'Posting comment...';
-                    gqlMutate('createUserComment', CREATE_COMMENT_MUTATION,
-                      { input: { userId: user.id, comment: commentText, zendeskUrl: window.location.href } },
-                      () => {
-                        confStatus.style.color = '#6ee7b7';
-                        confStatus.textContent = '\u2714 Custom shipment created!';
-                        cBtn.textContent = '\u2714 Done';
-                        confirmBtn.disabled = true;
-                        confirmBtn.textContent = '\u2714 Created';
-                        confirmBtn.style.background = 'rgba(110,231,183,0.15)';
-                        confirmBtn.style.color = '#6ee7b7';
-                        setTimeout(() => {
-                          confOverlay.remove();
-                          overlay.remove();
-                          document.getElementById('sb-product-search-panel')?.remove();
-                        }, 1800);
-                      }
-                    );
-                  };
+                const pollForAutoComment = (attemptsLeft) => {
+                  fetchComments(user.id, (comments) => {
+                    const autoComment = csOrderNumber
+                      ? comments.find(c => c.comment && c.comment.includes(csOrderNumber))
+                      : null;
+                    if (autoComment) {
+                      confStatus.textContent = 'Removing automated comment...';
+                      gqlMutate('deleteUserComment', DELETE_COMMENT_MUTATION, { id: autoComment.id },
+                        () => postComment()
+                      );
+                    } else if (attemptsLeft > 1) {
+                      confStatus.textContent = 'Finding automated comment...';
+                      setTimeout(() => pollForAutoComment(attemptsLeft - 1), 1500);
+                    } else {
+                      postComment();
+                    }
+                  });
+                };
 
-                  if (autoComment) {
-                    confStatus.textContent = 'Removing automated comment...';
-                    gqlMutate('deleteUserComment', DELETE_COMMENT_MUTATION, { id: autoComment.id },
-                      () => postComment()
-                    );
-                  } else {
-                    postComment();
-                  }
-                });
+                pollForAutoComment(4);
               }
             );
           };
@@ -5073,7 +5079,9 @@
     const current = user?.userAddress?.shipping;
     const orderAddr = order?.initialShippingAddress;
     if (!current?.street1 || !orderAddr?.street1) return null; // can't compare
-    return _normalizeAddr(current.street1) === _normalizeAddr(orderAddr.street1);
+    const currentFull = [current.street1, current.street2].filter(Boolean).join(' ');
+    const orderFull   = [orderAddr.street1, orderAddr.street2].filter(Boolean).join(' ');
+    return _normalizeAddr(currentFull) === _normalizeAddr(orderFull);
   }
 
   /** Fetch user details (subscription + fraud + gender + gweb) + last order and render the info bar. */
