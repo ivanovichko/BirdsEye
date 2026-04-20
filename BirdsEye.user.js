@@ -4311,7 +4311,11 @@
       const user = await getUser();
       const name = user ? toProperCase([user.firstName, user.lastName].filter(Boolean).join(' ')) : null;
 
-      if (name && nameField) {
+      if (!user && !BEARER_TOKEN) {
+        // Token was expired or missing — dismiss modal, surface the token issue
+        document.querySelector('button[data-kt="modalFooterBasic_buttonCancel"]')?.click();
+        btn.textContent = '⚠ Token Expired'; btn.style.color = '#fca5a5';
+      } else if (name && nameField) {
         setReactValue(nameField, name);
         await new Promise(r => setTimeout(r, 300));
         document.querySelector('button[data-kt="modalFooterBasic_buttonPrimary"]')?.click();
@@ -4787,7 +4791,8 @@
     addToolbarButton('sb-open-account-btn', '🔗 Open Account', (btn) => {
       const user = cachedCustomerCtx?.user;
       if (!user?.id) {
-        btn.textContent = '✘ No customer';
+        const label = (!BEARER_TOKEN || !tokenValid) ? '⚠ Token Expired' : '✘ No customer';
+        btn.textContent = label;
         btn.style.color = '#fca5a5';
         setTimeout(() => { btn.textContent = '🔗 Open Account'; btn.style.color = ''; }, 2000);
         return;
