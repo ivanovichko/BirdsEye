@@ -4303,9 +4303,8 @@
           if (err || !users?.length) return resolve(null);
           const sbUsers = users.filter(u => !u.origin || u.origin === 'SCENTBIRD');
           const exactMatch = sbUsers.find(u => u.email?.toLowerCase() === email.toLowerCase());
-          const sbUser = exactMatch || sbUsers[0];
-          if (sbUser) cachedCustomerCtx = { email, user: sbUser, _kustomerId: getCustomerIdFromURL() };
-          resolve(sbUser || null);
+          if (exactMatch) cachedCustomerCtx = { email, user: exactMatch, _kustomerId: getCustomerIdFromURL() };
+          resolve(exactMatch || null);
         });
       });
 
