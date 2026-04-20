@@ -2918,6 +2918,18 @@
                 statusEl.style.color = '#6ee7b7';
                 statusEl.textContent = '\u2714 Subscription cancelled.';
                 confirmBtn.textContent = '\u2714 Done';
+                // Update cache so reopening the panel sees it as already cancelled
+                if (cachedCustomerCtx?.user) {
+                  if (!cachedCustomerCtx.user.subscription) cachedCustomerCtx.user.subscription = {};
+                  cachedCustomerCtx.user.subscription.status = 'Cancelled';
+                }
+                // Disable the toolbar button for this session
+                const cancelToolbarBtn = document.getElementById('sb-cancel-btn');
+                if (cancelToolbarBtn) {
+                  cancelToolbarBtn.disabled = true;
+                  cancelToolbarBtn.style.opacity = '0.4';
+                  cancelToolbarBtn.style.cursor = 'not-allowed';
+                }
                 setTimeout(() => removePanel('sb-cancel-panel'), 2000);
               });
             });
