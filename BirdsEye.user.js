@@ -4435,22 +4435,23 @@
       const user = await getUser();
       const name = user ? toProperCase([user.firstName, user.lastName].filter(Boolean).join(' ')) : null;
 
-      if (!user && !BEARER_TOKEN) {
-        // Token was expired or missing — dismiss modal, surface the token issue
-        document.querySelector('button[data-kt="modalFooterBasic_buttonCancel"]')?.click();
-        btn.textContent = '⚠ Token Expired'; btn.style.color = '#fca5a5';
-      } else if (name && nameField) {
+      if (name && nameField) {
         setReactValue(nameField, name);
         await new Promise(r => setTimeout(r, 300));
         document.querySelector('button[data-kt="modalFooterBasic_buttonPrimary"]')?.click();
         btn.textContent = '✔ Done'; btn.style.color = '#6ee7b7';
       } else if (nameField && nameField.value.trim()) {
-        // Fallback: title-case the existing name
+        // Fallback: title-case the existing name (runs even if no CRM user / no token)
         setReactValue(nameField, toProperCase(nameField.value.trim()));
         await new Promise(r => setTimeout(r, 300));
         document.querySelector('button[data-kt="modalFooterBasic_buttonPrimary"]')?.click();
         btn.textContent = '✔ Cased'; btn.style.color = '#fcd34d';
+      } else if (!user && !BEARER_TOKEN) {
+        // No CRM user and no token — dismiss modal, surface the token issue
+        document.querySelector('button[data-kt="modalFooterBasic_buttonCancel"]')?.click();
+        btn.textContent = '⚠ Token Expired'; btn.style.color = '#fca5a5';
       } else {
+        document.querySelector('button[data-kt="modalFooterBasic_buttonCancel"]')?.click();
         btn.textContent = '✘ Not Found'; btn.style.color = '#fca5a5';
       }
       setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; }, 2000);
