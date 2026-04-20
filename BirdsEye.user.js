@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.7.1
+// @version      8.7.2
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -1519,42 +1519,48 @@
       findOtherBtn.textContent = '⏳ Searching…';
       results.innerHTML = '';
 
-      const terms = [];
-      const termLabels = [];
       const currentUser = cachedCustomerCtx?.user;
+      const currentId = currentUser?.id;
+      const primaryEmail = (cachedCustomerCtx?.email || '').toLowerCase();
 
-      const street1 = currentUser?.userAddress?.shipping?.street1;
-      if (street1) { terms.push(street1); termLabels.push('address'); }
-
-      const fullName = [currentUser?.firstName, currentUser?.lastName].filter(Boolean).join(' ');
-      if (fullName) { terms.push(fullName); termLabels.push('name'); }
+      // Collect terms by tier: 1=email/phone, 2=address, 3=name
+      const tier1 = [], tier2 = [], tier3 = [];
 
       const kAttrs = await resolveKustomerAttributes();
-      const primaryEmail = cachedCustomerCtx?.email;
       if (kAttrs?.emails?.length) {
-        const altEmails = kAttrs.emails.filter(e => e.toLowerCase() !== (primaryEmail || '').toLowerCase());
-        altEmails.forEach(e => terms.push(e));
-        if (altEmails.length) termLabels.push('email');
+        kAttrs.emails
+          .filter(e => e.toLowerCase() !== primaryEmail)
+          .forEach(e => tier1.push(e));
       }
-      if (kAttrs?.phones?.length) {
-        kAttrs.phones.forEach(p => terms.push(p));
-        termLabels.push('phone');
-      }
+      if (kAttrs?.phones?.length) kAttrs.phones.forEach(p => tier1.push(p));
 
-      if (!terms.length) {
+      const street1 = currentUser?.userAddress?.shipping?.street1;
+      if (street1) tier2.push(street1);
+
+      const fullName = [currentUser?.firstName, currentUser?.lastName].filter(Boolean).join(' ');
+      if (fullName) tier3.push(fullName);
+
+      if (!tier1.length && !tier2.length && !tier3.length) {
         results.innerHTML = `<div style="color:#94a3b8;padding:8px 0;">No search terms available — load a customer first.</div>`;
         findOtherBtn.disabled = false; findOtherBtn.textContent = '🔎 Find Other Accounts';
         return;
       }
 
-      // Run searches sequentially, collect unique results excluding current account
-      const seen = new Map();
-      const currentId = currentUser?.id;
-      for (const term of terms) {
+      const searchTerms = [
+        ...tier1.map(t => ({ term: t, tier: 1 })),
+        ...tier2.map(t => ({ term: t, tier: 2 })),
+        ...tier3.map(t => ({ term: t, tier: 3 })),
+      ];
+
+      // Run sequentially; track lowest (best) tier per user
+      const seen = new Map(); // id -> { user, tier }
+      for (const { term, tier } of searchTerms) {
         await new Promise(resolve => {
           searchCRM(term, (users, err) => {
             if (!err && users?.length) {
-              users.forEach(u => { if (u.id !== currentId && !seen.has(u.id)) seen.set(u.id, u); });
+              users.forEach(u => {
+                if (u.id !== currentId && !seen.has(u.id)) seen.set(u.id, { user: u, tier });
+              });
             }
             resolve();
           });
@@ -1562,12 +1568,22 @@
       }
 
       findOtherBtn.disabled = false; findOtherBtn.textContent = '🔎 Find Other Accounts';
+
       if (!seen.size) {
         results.innerHTML = `<div style="color:#94a3b8;padding:8px 0;">No other accounts found.</div>`;
         return;
       }
-      const found = Array.from(seen.values());
-      renderUsers(found, `Found ${found.length} other account(s) via: ${termLabels.join(' · ')}`);
+
+      const termLabels = [
+        ...(tier1.length ? ['email / phone'] : []),
+        ...(tier2.length ? ['address'] : []),
+        ...(tier3.length ? ['name'] : []),
+      ];
+      const sorted = Array.from(seen.values())
+        .sort((a, b) => a.tier - b.tier)
+        .map(e => e.user);
+
+      renderUsers(sorted, `Found ${sorted.length} other account(s) via: ${termLabels.join(' · ')}`);
     };
 
     searchBtn.onclick = doSearch;
