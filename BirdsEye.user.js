@@ -4938,7 +4938,7 @@
 
   /** Normalize address string for comparison. */
   function _normalizeAddr(s) {
-    return (s || '').trim().toLowerCase().replace(/[.,#\-]+/g, ' ').replace(/\s+/g, ' ');
+    return (s || '').toLowerCase().replace(/[.,#\-]+/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
   /** Compare user's current address against last order's shipping address. */
