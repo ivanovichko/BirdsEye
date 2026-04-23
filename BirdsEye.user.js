@@ -5162,8 +5162,10 @@
                   const hasChargeback = chargeList.some(c => c.charge?.status === 'CHARGEBACK');
                   if (hasChargeback) {
                     const warnGroup = document.getElementById('sb-info-group-warnings');
-                    if (warnGroup) {
-                      warnGroup.appendChild(makeTag('⚠ Chargeback', '#ef4444', 'rgba(239,68,68,0.15)', 'rgba(239,68,68,0.4)'));
+                    if (warnGroup && !warnGroup.querySelector('[data-tag="chargeback"]')) {
+                      const t = makeTag('⚠ Chargeback', '#ef4444', 'rgba(239,68,68,0.15)', 'rgba(239,68,68,0.4)');
+                      t.dataset.tag = 'chargeback';
+                      warnGroup.appendChild(t);
                       warnGroup.style.display = '';
                     }
                   }
@@ -5205,9 +5207,12 @@
         }
       }
 
+      const noEmailKey = `__no_email:${startId}`;
+      if (userInfoLastEmail === noEmailKey) return; // already determined no email for this customer
+
       const email = await resolveEmail();
       if (getCustomerIdFromURL() !== startId) return; // stale
-      if (!email) return;
+      if (!email) { userInfoLastEmail = noEmailKey; return; }
 
       // Full resolve
       if (email === userInfoLastEmail && document.getElementById('sb-user-info-bar')) return;
