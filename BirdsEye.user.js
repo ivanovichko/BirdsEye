@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.7.3
+// @version      8.8.0
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -234,7 +234,14 @@
     `;
     if (title) {
       const hdr = document.createElement('div');
-      hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;font-weight:700;font-size:14px;margin-bottom:12px;';
+      hdr.style.cssText = `
+        position:sticky;top:-20px;z-index:5;
+        margin:-20px -24px 12px;padding:14px 24px;
+        background:#1e1e2e;
+        display:flex;justify-content:space-between;align-items:center;
+        font-weight:700;font-size:14px;
+        border-bottom:1px solid rgba(255,255,255,0.06);
+      `;
       const span = document.createElement('span');
       span.textContent = title;
       hdr.appendChild(span);
@@ -263,7 +270,13 @@
       padding:14px;z-index:999999;border:1px solid rgba(255,255,255,0.1);box-sizing:border-box;
     `;
     const hdr = document.createElement('div');
-    hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;';
+    hdr.style.cssText = `
+      position:sticky;top:-14px;z-index:5;
+      margin:-14px -14px 10px;padding:10px 14px;
+      background:#1e1e2e;
+      display:flex;align-items:center;justify-content:space-between;
+      border-bottom:1px solid rgba(255,255,255,0.06);
+    `;
     hdr.innerHTML = `<span style="font-weight:700;font-size:14px;">${title}</span>`;
     const closeBtn = document.createElement('button');
     closeBtn.textContent = 'Close \u2715';
@@ -487,8 +500,8 @@
       userSearch(input: $input) {
         total
         data { id email firstName lastName origin
-          userAddress { shipping { street1 city region postcode country } }
-          subscription { id status }
+          userAddress { shipping { street1 street2 city region postcode country } }
+          subscription { id status subscriptionEndDate }
         }
       }
     }`;
@@ -870,7 +883,9 @@
     );
   }
 
-  function mutCancelOrder(orderId, callback) {
+  function mutCancelOrder(orderId, reasonOrCallback, maybeCallback) {
+    const callback = typeof reasonOrCallback === 'function' ? reasonOrCallback : maybeCallback;
+    const reason = typeof reasonOrCallback === 'string' ? reasonOrCallback : 'CUSTOMER_CHANGED_THEIR_MIND';
     gqlMutate('cancelOrderById',
       `mutation cancelOrderById($input: CancelOrderByIdInput!) {
         cancelOrderById(input: $input) {
@@ -879,7 +894,7 @@
           __typename
         }
       }`,
-      { input: { id: orderId, subscriptionHold: true, unlockItems: false, refundReason: 'CUSTOMER_CHANGED_THEIR_MIND' } },
+      { input: { id: orderId, subscriptionHold: true, unlockItems: false, refundReason: reason } },
       (data, err) => callback(err ? null : data?.cancelOrderById, err)
     );
   }
@@ -912,7 +927,9 @@
     );
   }
 
-  function mutRefundCredits(userId, creditIds, shippingCreditIds, callback) {
+  function mutRefundCredits(userId, creditIds, shippingCreditIds, reasonOrCallback, maybeCallback) {
+    const callback = typeof reasonOrCallback === 'function' ? reasonOrCallback : maybeCallback;
+    const reason = typeof reasonOrCallback === 'string' ? reasonOrCallback : 'CUSTOMER_CHANGED_THEIR_MIND';
     gqlMutate('refundCredits',
       `mutation refundCredits($input: RefundCreditsInput) {
         refundCredits(input: $input) {
@@ -927,13 +944,15 @@
         forceRefundUsedCredits: true,
         shippingCredits: shippingCreditIds,
         forceRefundUsedShippingCredits: true,
-        reason: 'CUSTOMER_CHANGED_THEIR_MIND'
+        reason
       }},
       (data, err) => callback(err ? null : data?.refundCredits, err)
     );
   }
 
-  function mutRefundInvoiceItems(userId, items, callback) {
+  function mutRefundInvoiceItems(userId, items, reasonOrCallback, maybeCallback) {
+    const callback = typeof reasonOrCallback === 'function' ? reasonOrCallback : maybeCallback;
+    const reason = typeof reasonOrCallback === 'string' ? reasonOrCallback : 'CUSTOMER_CHANGED_THEIR_MIND';
     gqlMutate('refundInvoiceItems',
       `mutation refundInvoiceItems($input: RefundInvoiceItemListInput) {
         refundInvoiceItems(input: $input) {
@@ -942,7 +961,7 @@
           __typename
         }
       }`,
-      { input: { userId, items, reason: 'CUSTOMER_CHANGED_THEIR_MIND' } },
+      { input: { userId, items, reason } },
       (data, err) => callback(err ? null : data?.refundInvoiceItems, err)
     );
   }
@@ -1034,11 +1053,11 @@
       if (err || !users?.length) return fail('Not found');
       const sbUsers = users.filter(u => !u.origin || u.origin === 'SCENTBIRD');
       if (!sbUsers.length) return fail('No Scentbird account found');
-      // Prefer exact email match to avoid binding wrong account on partial matches
+      // Require exact email match — never bind to a partial/related account
       const exactMatch = sbUsers.find(u => u.email?.toLowerCase() === email.toLowerCase());
-      const bestUser = exactMatch || sbUsers[0];
-      cachedCustomerCtx = { email, user: bestUser, _kustomerId: getCustomerIdFromURL() };
-      callback({ user: bestUser });
+      if (!exactMatch) return fail('No exact email match');
+      cachedCustomerCtx = { email, user: exactMatch, _kustomerId: getCustomerIdFromURL() };
+      callback({ user: exactMatch });
     });
   }
 
@@ -1090,10 +1109,12 @@
   }
 
   function orderCopyText(order) {
-    return orderProductLines(order).join('\n');
+    const lines = orderProductLines(order);
+    const isWelcomeKit = (order.tags || []).includes('REBRAND_CASE') || order.hasRebrandCase;
+    if (isWelcomeKit) lines.push('Signature Grey Fragrance Case (welcome gift)');
+    return lines.join('\n');
   }
 
-  const CANCELLABLE_STATUSES = ["PENDING", "UNPROCESSED", "UPCHARGE_WAITING_CHARGE", "ITEM_NOT_AVAILABLE", "BACKORDERED", "NEW"];
   const NON_REFUNDABLE_STATUSES = ["SHIPPED", "DELIVERED", "PRINTED", "DONE", "PROCESSED"];
 
   function renderOrderBlock(order, compact = false, ctx = null, isReplacement = false) {
@@ -1210,15 +1231,18 @@
       btnRow.appendChild(replBtn);
 
       const ws = (order.warehouseOrder?.data?.status || order.status || '').toUpperCase();
-      if (CANCELLABLE_STATUSES.includes(ws)) {
-        const cancelOrderBtn = document.createElement('button');
-        cancelOrderBtn.textContent = '\u274C Cancel Order';
-        cancelOrderBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid #dc2626;background:transparent;color:#fca5a5;font-weight:600;font-size:11px;cursor:pointer;';
+      const cancellable = !NON_REFUNDABLE_STATUSES.includes(ws);
+      const cancelOrderBtn = document.createElement('button');
+      cancelOrderBtn.textContent = '\u274C Cancel Order';
+      cancelOrderBtn.disabled = !cancellable;
+      cancelOrderBtn.title = cancellable ? '' : `Cannot cancel — order is ${ws}`;
+      cancelOrderBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${cancellable ? '#dc2626' : 'rgba(220,38,38,0.3)'};background:transparent;color:${cancellable ? '#fca5a5' : 'rgba(252,165,165,0.4)'};font-weight:600;font-size:11px;cursor:${cancellable ? 'pointer' : 'not-allowed'};`;
+      if (cancellable) {
         cancelOrderBtn.onmouseenter = () => cancelOrderBtn.style.background = 'rgba(220,38,38,0.15)';
         cancelOrderBtn.onmouseleave = () => cancelOrderBtn.style.background = 'transparent';
         cancelOrderBtn.onclick = () => showCancelOrderDialog(order, ctx.user, cancelOrderBtn);
-        btnRow.appendChild(cancelOrderBtn);
       }
+      btnRow.appendChild(cancelOrderBtn);
 
       // Hold / Unhold button
       const isOnHold = ws === 'ON_HOLD';
@@ -1268,34 +1292,41 @@
     const disc  = item.discount;
     const total = item.total;
     const month = chargeMonthLabel(billingDate);
-    const taxStr  = tax  ? ` (after ${fmtMoney(tax, currency)} for sales tax)` : '';
-    const discStr = disc ? `, including a ${fmtMoney(disc, currency)} discount` : '';
+    const taxStr   = tax > 0 ? ` (after ${fmtMoney(tax, currency)} for sales tax)` : '';
+    const discStr  = disc ? `, including a ${fmtMoney(disc, currency)} discount` : '';
+    const taxClause = tax > 0 ? ` + ${fmtMoney(tax, currency)} tax` : '';
 
     switch (t) {
       case 'FIRST_SUBSCRIPTION':
-        return `* ${fmtMoney(total, currency)} was your initial subscription payment for ${month} (${fmtMoney(item.price, currency)}${discStr} + ${fmtMoney(tax, currency)} tax);`;
+        return `* ${fmtMoney(total, currency)} was your initial subscription payment for ${month} (${fmtMoney(item.price, currency)}${discStr}${taxClause});`;
       case 'RECURRENT_CHARGE':
-        return `* ${fmtMoney(total, currency)} was your monthly subscription payment for ${month} (${fmtMoney(item.price, currency)} + ${fmtMoney(tax, currency)} tax);`;
+        return `* ${fmtMoney(total, currency)} was your monthly subscription payment for ${month} (${fmtMoney(item.price, currency)}${taxClause});`;
       case 'RESUBSCRIBE':
-        return `* ${fmtMoney(total, currency)} was your resubscription payment for ${month} (${fmtMoney(item.price, currency)} + ${fmtMoney(tax, currency)} tax);`;
+        return `* ${fmtMoney(total, currency)} was your resubscription payment for ${month} (${fmtMoney(item.price, currency)}${taxClause});`;
       case 'UPGRADE_PARTIAL':
-        return `* ${fmtMoney(total, currency)} was a charge for upgrading your account (${fmtMoney(item.price, currency)} + ${fmtMoney(tax, currency)} tax).\nAs soon as you upgraded your plan, the difference in prices between the two plans was billed. Since all our subscriptions start out as a basic 1 fragrance/month and can be upgraded at any point, this transaction was applied as a separate charge;`;
+        return `* ${fmtMoney(total, currency)} was a charge for upgrading your account (${fmtMoney(item.price, currency)}${taxClause}).\nAs soon as you upgraded your plan, the difference in prices between the two plans was billed. Since all our subscriptions start out as a basic 1 fragrance/month and can be upgraded at any point, this transaction was applied as a separate charge;`;
       case 'UPGRADE_FULL':
-        return `* ${fmtMoney(total, currency)} was a charge for a full plan upgrade (${fmtMoney(item.price, currency)} + ${fmtMoney(tax, currency)} tax).\nWhen upgrading your subscription plan, the full amount for the new plan is billed immediately as a separate charge;`;
+        return `* ${fmtMoney(total, currency)} was a charge for a full plan upgrade (${fmtMoney(item.price, currency)}${taxClause}).\nWhen upgrading your subscription plan, the full amount for the new plan is billed immediately as a separate charge;`;
       case 'PREMIUM_PRODUCT_UPCHARGE': {
         const name = (item.description && item.description.toLowerCase() !== 'premium product')
           ? item.description : 'a premium fragrance';
-        return `* ${fmtMoney(total, currency)} was a premium fragrance upcharge for including ${name} in your order (${fmtMoney(item.price, currency)} + ${fmtMoney(tax, currency)} tax).\nSome fragrances on our website are part of a high-end lux collection and carry an upcharge of up to $25. They are marked by a tag in the left corner, and adding them to your queue triggers a pop-up with information about the extra cost;`;
+        return `* ${fmtMoney(total, currency)} was a premium fragrance upcharge for including ${name} in your order (${fmtMoney(item.price, currency)}${taxClause}).\nSome fragrances on our website are part of a high-end lux collection and carry an upcharge of up to $25. They are marked by a tag in the left corner, and adding them to your queue triggers a pop-up with information about the extra cost;`;
       }
       case 'PERFUME_CASE_UPCHARGE':
-        return `* ${fmtMoney(total, currency)} was a charge for including a Case Subscription add-on in your plan (${fmtMoney(item.price, currency)} + ${fmtMoney(tax, currency)} tax). With this, you get a different Fragrance Case sent to you together with each shipment;`;
+        return `* ${fmtMoney(total, currency)} was a charge for including a Case Subscription add-on in your plan (${fmtMoney(item.price, currency)}${taxClause}). With this, you get a different Fragrance Case sent to you together with each shipment;`;
       case 'SHIPPING_CREDIT':
       case 'SHIPPING_UPCHARGE':
-        return `* ${fmtMoney(total, currency)} was a shipping surcharge (${fmtMoney(item.price, currency)} + ${fmtMoney(tax, currency)} tax);`;
+        return `* ${fmtMoney(total, currency)} was a shipping surcharge (${fmtMoney(item.price, currency)}${taxClause});`;
       case 'SAMPLES_UPCHARGE':
-        return `* ${fmtMoney(total, currency)} was a charge for including a Samples subscription add-on in your order (${fmtMoney(item.price, currency)} + ${fmtMoney(tax, currency)} tax). With this add-on you get two 1.5ml samples with each order;`;
+        return `* ${fmtMoney(total, currency)} was a charge for including a Samples subscription add-on in your order (${fmtMoney(item.price, currency)}${taxClause}). With this add-on you get two 1.5ml samples with each order;`;
+      case 'CAR_SCENT_UPCHARGE':
+        return `* ${fmtMoney(total, currency)} was a charge for your Drift Car scent add-on (${fmtMoney(item.price, currency)}${taxClause}). With this add-on, you get a car fragrance in every order;`;
+      case 'CANDLE_UPCHARGE':
+        return `* ${fmtMoney(total, currency)} was a charge for your Candle Club add-on (${fmtMoney(item.price, currency)}${taxClause}). You get a Scented Candle included in every order with this add-on;`;
+      case 'HSD_UPCHARGE':
+        return `* ${fmtMoney(total, currency)} was a charge for your Home Diffuser add-on (${fmtMoney(item.price, currency)}${taxClause}). With this add-on you get a diffuser included in every order;`;
       case 'SHIPPING_PURCHASE':
-        return `* ${fmtMoney(total, currency)} was a charge for the shipping of your order (${fmtMoney(item.price, currency)} + ${fmtMoney(tax, currency)} tax);`;
+        return `* ${fmtMoney(total, currency)} was a charge for the shipping of your order (${fmtMoney(item.price, currency)}${taxClause});`;
       case 'ECOMMERCE_PURCHASE':
         return `* ${fmtMoney(total, currency)} was a charge for the separate Online Shop order you placed with us (${fmtMoney(item.price, currency)}${discStr}${taxStr});`;
       case 'FAILED_CHARGE':
@@ -1311,7 +1342,25 @@
     const items = charge.cashbirdDetails?.invoice?.lineItems || [];
     const billingDate = charge.paymentDate || successEntry.date;
     const currency = detectCurrency(items);
-    const lines = items.filter(i => (i.total || 0) !== 0).map(i => lineItemExplanation(i, billingDate, currency)).filter(Boolean);
+
+    // Fold standalone TAX line items (e.g. Colorado state tax) into the first
+    // subscription-payment item so the bill reads as one charge with one tax figure.
+    const extraTax = items
+      .filter(i => i.type === 'TAX')
+      .reduce((s, i) => s + (i.total || 0), 0);
+    const TAX_TARGETS = new Set(['FIRST_SUBSCRIPTION', 'RESUBSCRIBE', 'RECURRENT_CHARGE']);
+    let absorbed = false;
+    const lines = items
+      .filter(i => i.type !== 'TAX' && (i.total || 0) !== 0)
+      .map(i => {
+        if (!absorbed && TAX_TARGETS.has(i.type)) {
+          absorbed = true;
+          return lineItemExplanation({ ...i, tax: (i.tax || 0) + extraTax }, billingDate, currency);
+        }
+        return lineItemExplanation(i, billingDate, currency);
+      })
+      .filter(Boolean);
+
     const hasShipping = (charge.cashbirdDetails?.shippingCredits?.length > 0)
       || items.some(i => i.type === 'SHIPPING_CREDIT' || i.type === 'SHIPPING_UPCHARGE');
     if (hasShipping) {
@@ -1418,13 +1467,14 @@
 
     const results = document.createElement('div');
 
-    function renderUsers(users, headerText) {
-      results.innerHTML = '';
+    function renderUsers(users, headerText, target) {
+      const container = target || results;
+      if (!target) container.innerHTML = '';
       if (headerText) {
         const hdr = document.createElement('div');
         hdr.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:12px;';
         hdr.textContent = headerText;
-        results.appendChild(hdr);
+        container.appendChild(hdr);
       }
       users.forEach(user => {
         const card = document.createElement('div');
@@ -1435,10 +1485,13 @@
         `;
         if (filterActive && card.dataset.subStatus !== 'Active' && card.dataset.subStatus !== 'Unpaid' && card.dataset.subStatus !== 'OnHold') card.style.display = 'none';
         const s = user.userAddress?.shipping;
-        const addr = s ? [s.street1,s.city,s.region,s.postcode].filter(Boolean).join(', ') : '';
+        const addr = s ? [s.street1,s.street2,s.city,s.region,s.postcode].filter(Boolean).join(', ') : '';
         const subSt = user.subscription?.status || '';
         const subColor = subSt === 'Active' ? '#6ee7b7' : subSt ? '#fca5a5' : '#64748b';
-        const subLabel = subSt || 'No subscription';
+        let subLabel = subSt || 'No subscription';
+        if (subSt === 'Cancelled' && user.subscription?.subscriptionEndDate) {
+          subLabel = 'Cancelled ' + fmtDateTag(user.subscription.subscriptionEndDate);
+        }
         const isDrift = user.origin && user.origin !== 'SCENTBIRD';
         if (isDrift) card.style.opacity = '0.5';
         card.innerHTML = `
@@ -1490,7 +1543,7 @@
           });
         }
 
-        results.appendChild(card);
+        container.appendChild(card);
       });
     }
 
@@ -1524,21 +1577,29 @@
       const primaryEmail = (cachedCustomerCtx?.email || '').toLowerCase();
 
       // Collect terms by tier: 1=email/phone, 2=address, 3=name
-      const tier1 = [], tier2 = [], tier3 = [];
+      const tier1Email = [], tier1Phone = [], tier2 = [], tier3 = [];
 
-      const kAttrs = await resolveKustomerAttributes();
-      if (kAttrs?.emails?.length) {
-        kAttrs.emails
-          .filter(e => e.toLowerCase() !== primaryEmail)
-          .forEach(e => tier1.push(e));
+      // Populate Kustomer-sourced emails/phones once on cachedCustomerCtx, then read from cache
+      if (cachedCustomerCtx && (cachedCustomerCtx._allEmails === undefined || cachedCustomerCtx._phones === undefined)) {
+        const kAttrs = await resolveKustomerAttributes();
+        cachedCustomerCtx._allEmails = kAttrs?.emails || [];
+        cachedCustomerCtx._phones    = kAttrs?.phones || [];
       }
-      if (kAttrs?.phones?.length) kAttrs.phones.forEach(p => tier1.push(p));
+      const cachedEmails = cachedCustomerCtx?._allEmails || [];
+      const cachedPhones = cachedCustomerCtx?._phones || [];
+
+      cachedEmails
+        .filter(e => e.toLowerCase() !== primaryEmail)
+        .forEach(e => tier1Email.push(e));
+      cachedPhones.forEach(p => tier1Phone.push(p));
 
       const street1 = currentUser?.userAddress?.shipping?.street1;
       if (street1) tier2.push(street1);
 
       const fullName = [currentUser?.firstName, currentUser?.lastName].filter(Boolean).join(' ');
       if (fullName) tier3.push(fullName);
+
+      const tier1 = [...tier1Email, ...tier1Phone];
 
       if (!tier1.length && !tier2.length && !tier3.length) {
         results.innerHTML = `<div style="color:#94a3b8;padding:8px 0;">No search terms available — load a customer first.</div>`;
@@ -1574,16 +1635,29 @@
         return;
       }
 
-      const termLabels = [
-        ...(tier1.length ? ['email / phone'] : []),
-        ...(tier2.length ? ['address'] : []),
-        ...(tier3.length ? ['name'] : []),
-      ];
-      const sorted = Array.from(seen.values())
-        .sort((a, b) => a.tier - b.tier)
-        .map(e => e.user);
+      const byTier = { 1: [], 2: [], 3: [] };
+      seen.forEach(({ user, tier }) => byTier[tier].push(user));
 
-      renderUsers(sorted, `Found ${sorted.length} other account(s) via: ${termLabels.join(' · ')}`);
+      results.innerHTML = '';
+      const total = seen.size;
+      const summary = document.createElement('div');
+      summary.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:12px;';
+      summary.textContent = `Found ${total} other account(s)`;
+      results.appendChild(summary);
+
+      const sections = [
+        { tier: 1, label: 'By email / phone' },
+        { tier: 2, label: 'By address' },
+        { tier: 3, label: 'By name' },
+      ];
+      sections.forEach(({ tier, label }) => {
+        if (!byTier[tier].length) return;
+        const sectionHdr = document.createElement('div');
+        sectionHdr.style.cssText = 'font-weight:700;font-size:12px;color:#cbd5e1;margin:12px 0 6px;';
+        sectionHdr.textContent = `${label} (${byTier[tier].length})`;
+        results.appendChild(sectionHdr);
+        renderUsers(byTier[tier], null, results);
+      });
     };
 
     searchBtn.onclick = doSearch;
@@ -1804,6 +1878,9 @@
           SHIPPING_CREDIT:          'Shipping',
           SHIPPING_UPCHARGE:        'Shipping',
           SAMPLES_UPCHARGE:         'Samples',
+          CAR_SCENT_UPCHARGE:       'Drift Car',
+          CANDLE_UPCHARGE:          'Candle Club',
+          HSD_UPCHARGE:             'Home Diffuser',
           SHIPPING_PURCHASE:        'Shipping',
           ECOMMERCE_PURCHASE:       'Ecommerce',
         };
@@ -2586,7 +2663,7 @@
       if (shipping) {
         const addrDisplay = document.createElement('div');
         addrDisplay.style.cssText = 'font-size:11px;color:#94a3b8;margin-bottom:8px;line-height:1.5;';
-        addrDisplay.textContent = [shipping.street1, shipping.city, shipping.region, shipping.postcode].filter(Boolean).join(', ');
+        addrDisplay.textContent = [shipping.street1, shipping.street2, shipping.city, shipping.region, shipping.postcode].filter(Boolean).join(', ');
         panel.appendChild(addrDisplay);
       }
 
@@ -2874,7 +2951,8 @@
 
         const subStatus = user.subscription?.status || '';
         const hasRecentSubOrder = (orders || []).some(o => o.type === 'SUBSCRIPTION' || !o.type);
-        const isAlreadyCancelled = subStatus.toLowerCase() === 'cancelled';
+        const isAwaitingCancel = !!cachedCustomerCtx?._isAwaitCancellation;
+        const isAlreadyCancelled = subStatus.toLowerCase() === 'cancelled' || isAwaitingCancel;
 
         // Customer info
         const name = [user.firstName, user.lastName].filter(Boolean).join(' ') || '\u2014';
@@ -2982,7 +3060,9 @@
         if (isAlreadyCancelled) {
           const subStatusEl = document.createElement('div');
           subStatusEl.style.cssText = 'font-size:11px;color:#f59e0b;margin-bottom:10px;';
-          subStatusEl.textContent = '⚠ Subscription status: ' + subStatus;
+          subStatusEl.textContent = isAwaitingCancel
+            ? '⚠ Subscription is already scheduled for cancellation'
+            : '⚠ Subscription status: ' + subStatus;
           panel.appendChild(subStatusEl);
         }
 
@@ -3199,40 +3279,80 @@
 
         fraudBtn.onclick = () => {
           const newStatus = (fraudBtn._currentStatus === 'DECLINE') ? 'DEFAULT' : 'DECLINE';
-          const action = newStatus === 'DECLINE' ? 'Blocklisting...' : 'Removing blocklist...';
-          fraudBtn.disabled = true;
-          fraudBtn.textContent = action;
+          const isAdding = newStatus === 'DECLINE';
 
-          gqlMutate('userSetFraudStatus', SET_FRAUD_STATUS_MUTATION,
-            { input: { userId: user.id, status: newStatus } },
-            (data, err) => {
-              const respErr = data?.userSetFraudStatus?.error;
-              const errMsg = err || respErr?.message;
-              if (errMsg) {
-                fraudBtn.style.color = '#fca5a5';
-                fraudBtn.textContent = '\u2718 ' + errMsg;
-                fraudBtn.disabled = false;
-                setTimeout(() => {
-                  fraudBtn.textContent = fraudBtn._currentStatus === 'DECLINE' ? '✔ Blocklisted (Fraud)' : '🚫 Blocklist (Fraud)';
-                  fraudBtn.style.color = fraudBtn._currentStatus === 'DECLINE' ? '#ef4444' : '#c4b5fd';
-                }, 2000);
-                return;
-              }
-              fraudBtn._currentStatus = newStatus;
-              if (newStatus === 'DECLINE') {
-                fraudBtn.textContent = '✔ Blocklisted (Fraud)';
-                fraudBtn.style.color = '#ef4444';
-                fraudBtn.style.borderColor = '#ef4444';
-                mutPostComment(user.id, 'Fraud blocklist applied', () => {});
-              } else {
-                fraudBtn.textContent = '🚫 Blocklist (Fraud)';
-                fraudBtn.style.color = '#c4b5fd';
-                fraudBtn.style.borderColor = '#7c3aed';
-                mutPostComment(user.id, 'Fraud blocklist removed', () => {});
-              }
-              fraudBtn.disabled = false;
-            }
-          );
+          const { overlay, box } = createModal({
+            id: 'sb-fraud-confirm-dialog',
+            title: isAdding ? '🚫 Confirm Blocklist' : '✅ Remove from Blocklist',
+            width: 360,
+          });
+
+          const intro = document.createElement('div');
+          intro.style.cssText = 'font-size:12px;color:#94a3b8;margin-bottom:10px;';
+          intro.textContent = isAdding
+            ? `Add ${user.email} to the fraud blocklist?`
+            : `Remove ${user.email} from the fraud blocklist?`;
+          box.appendChild(intro);
+
+          box.appendChild(makeLabel('Comment (optional)'));
+          const ta = document.createElement('textarea');
+          ta.rows = 3;
+          ta.placeholder = isAdding ? 'Reason for blocklisting…' : 'Reason for unblocklisting…';
+          ta.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:12px;box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;margin-bottom:10px;';
+          box.appendChild(ta);
+
+          const dlgStatus = makeStatusEl();
+          box.appendChild(dlgStatus);
+
+          const btns = makeDialogButtons({
+            confirmLabel: isAdding ? 'Blocklist' : 'Remove',
+            confirmColor: isAdding ? '#dc2626' : '#059669',
+            onCancel: () => overlay.remove(),
+            onConfirm: (confirmBtn, cancelBtn) => {
+              confirmBtn.disabled = true; cancelBtn.disabled = true;
+              confirmBtn.textContent = isAdding ? 'Blocklisting…' : 'Removing…';
+              dlgStatus.style.color = '#94a3b8';
+              dlgStatus.textContent = '';
+
+              gqlMutate('userSetFraudStatus', SET_FRAUD_STATUS_MUTATION,
+                { input: { userId: user.id, status: newStatus } },
+                (data, err) => {
+                  const respErr = data?.userSetFraudStatus?.error;
+                  const errMsg = err || respErr?.message;
+                  if (errMsg) {
+                    dlgStatus.style.color = '#fca5a5';
+                    dlgStatus.textContent = '\u2718 ' + errMsg;
+                    confirmBtn.disabled = false; cancelBtn.disabled = false;
+                    confirmBtn.textContent = isAdding ? 'Blocklist' : 'Remove';
+                    return;
+                  }
+
+                  const base = isAdding ? 'Fraud blocklist applied' : 'Fraud blocklist removed';
+                  const note = ta.value.trim();
+                  const comment = note ? `${base} — ${note}` : base;
+
+                  dlgStatus.textContent = 'Posting comment…';
+                  mutPostComment(user.id, comment, () => {
+                    fraudBtn._currentStatus = newStatus;
+                    if (newStatus === 'DECLINE') {
+                      fraudBtn.textContent = '✔ Blocklisted (Fraud)';
+                      fraudBtn.style.color = '#ef4444';
+                      fraudBtn.style.borderColor = '#ef4444';
+                    } else {
+                      fraudBtn.textContent = '🚫 Blocklist (Fraud)';
+                      fraudBtn.style.color = '#c4b5fd';
+                      fraudBtn.style.borderColor = '#7c3aed';
+                    }
+                    fraudBtn.disabled = false;
+                    dlgStatus.style.color = '#6ee7b7';
+                    dlgStatus.textContent = '✔ Done!';
+                    setTimeout(() => overlay.remove(), 1200);
+                  });
+                }
+              );
+            },
+          });
+          box.appendChild(btns);
         };
         panel.appendChild(fraudBtn);
       });
@@ -3460,6 +3580,13 @@
     { value: 'charge clarification', label: 'Charge clarification' },
     { value: 'order change needed',  label: 'Order change needed' },
     { value: 'clarification needed', label: 'Clarification needed' },
+    { value: '__OTHER__',            label: 'Other (custom comment)' },
+  ];
+
+  const REFUND_REASONS = [
+    { value: 'CUSTOMER_CHANGED_THEIR_MIND',     label: 'Customer changed their mind' },
+    { value: 'UPCHARGE_REFUND',                 label: 'Premium upcharge / add-on refund' },
+    { value: 'BACKORDERED_UNABLE_TO_REPLACE',   label: 'Backordered, unable to replace' },
   ];
 
   function showCancelOrderDialog(order, user, triggerBtn) {
@@ -3474,8 +3601,17 @@
     // Reason
     box.appendChild(makeLabel('Reason'));
     const select = makeSelect(CANCEL_ORDER_REASONS, 'charge clarification');
-    select.style.marginBottom = '14px';
+    select.style.marginBottom = '10px';
     box.appendChild(select);
+
+    // Custom comment textarea (shown when "Other" is selected)
+    const otherTa = document.createElement('textarea');
+    otherTa.placeholder = 'Custom reason / comment…';
+    otherTa.style.cssText = 'width:100%;min-height:60px;padding:6px 8px;background:#0f172a;border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#e2e8f0;font-size:12px;font-family:inherit;box-sizing:border-box;margin-bottom:14px;display:none;';
+    box.appendChild(otherTa);
+    select.addEventListener('change', () => {
+      otherTa.style.display = select.value === '__OTHER__' ? 'block' : 'none';
+    });
 
     // Status
     const statusEl = makeStatusEl();
@@ -3487,7 +3623,17 @@
       confirmColor: '#dc2626',
       onCancel: () => overlay.remove(),
       onConfirm: (confirmBtn, cancelBtn) => {
+        const isOther = select.value === '__OTHER__';
+        const otherNote = otherTa.value.trim();
+        if (isOther && !otherNote) {
+          statusEl.style.color = '#fca5a5';
+          statusEl.textContent = '✘ Please enter a custom comment';
+          otherTa.focus();
+          return;
+        }
+
         confirmBtn.disabled = true; cancelBtn.disabled = true;
+        select.disabled = true; otherTa.disabled = true;
         confirmBtn.textContent = 'Cancelling...';
         statusEl.textContent = 'Cancelling order...';
 
@@ -3496,6 +3642,7 @@
             statusEl.style.color = '#fca5a5';
             statusEl.textContent = '✘ ' + err;
             confirmBtn.disabled = false; cancelBtn.disabled = false;
+            select.disabled = false; otherTa.disabled = false;
             confirmBtn.textContent = 'Cancel Order';
             return;
           }
@@ -3505,7 +3652,8 @@
 
           const d = new Date(order.year + '-' + String(order.month).padStart(2, '0') + '-01');
           const mLabel = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }).replace(' ', "'");
-          const comment = 'Cancelled ' + mLabel + ' order, ' + select.value;
+          const reasonText = isOther ? otherNote : select.value;
+          const comment = 'Cancelled ' + mLabel + ' order, ' + reasonText;
 
           mutPostComment(user.id, comment, () => {
             statusEl.style.color = '#6ee7b7';
@@ -3584,6 +3732,13 @@
       box.appendChild(liWarn);
     }
 
+    const reasonLabel = makeLabel('Refund reason');
+    reasonLabel.style.marginTop = '0';
+    box.appendChild(reasonLabel);
+    const reasonSel = makeSelect(REFUND_REASONS, 'CUSTOMER_CHANGED_THEIR_MIND');
+    reasonSel.style.marginBottom = '12px';
+    box.appendChild(reasonSel);
+
     const warn = document.createElement('div');
     warn.style.cssText = 'font-size:12px;color:#fca5a5;margin-bottom:14px;line-height:1.5;';
     warn.textContent = 'This will refund the payment to the customer. This cannot be undone.';
@@ -3599,9 +3754,11 @@
       onConfirm: (confirmBtn, cancelBtn) => {
         confirmBtn.disabled = true;
         cancelBtn.disabled = true;
+        reasonSel.disabled = true;
         confirmBtn.textContent = 'Refunding...';
         statusEl.textContent = '';
 
+        const reason = reasonSel.value;
         const creditIds = credits.map(c => c.id);
         const shippingCreditIds = shippingCredits.map(c => c.id);
 
@@ -3612,6 +3769,7 @@
               statusEl.textContent = '\u2718 ' + err;
               confirmBtn.disabled = false;
               cancelBtn.disabled = false;
+              reasonSel.disabled = false;
               confirmBtn.textContent = 'Refund';
               return;
             }
@@ -3657,15 +3815,15 @@
 
           if (hasCreditsFlag && hasItems) {
             statusEl.textContent = 'Refunding subscription...';
-            mutRefundCredits(user.id, creditIds, shippingCreditIds, (data, err) => {
+            mutRefundCredits(user.id, creditIds, shippingCreditIds, reason, (data, err) => {
               if (err) return onResult(null, err);
               statusEl.textContent = 'Refunding upcharge...';
-              mutRefundInvoiceItems(user.id, unrefundedItems, onResult);
+              mutRefundInvoiceItems(user.id, unrefundedItems, reason, onResult);
             });
           } else if (hasCreditsFlag) {
-            mutRefundCredits(user.id, creditIds, shippingCreditIds, onResult);
+            mutRefundCredits(user.id, creditIds, shippingCreditIds, reason, onResult);
           } else if (hasItems) {
-            mutRefundInvoiceItems(user.id, unrefundedItems, onResult);
+            mutRefundInvoiceItems(user.id, unrefundedItems, reason, onResult);
           } else {
             onResult({}, null);
           }
@@ -3674,8 +3832,15 @@
         if (orderId) {
           statusEl.style.color = '#94a3b8';
           statusEl.textContent = 'Cancelling order...';
-          mutCancelOrder(orderId, (data, cancelErr) => {
-            if (cancelErr) console.warn('Order cancel failed:', cancelErr);
+          mutCancelOrder(orderId, reason, (data, cancelErr) => {
+            if (cancelErr) {
+              statusEl.style.color = '#fca5a5';
+              statusEl.textContent = '✘ Cancel failed: ' + cancelErr;
+              confirmBtn.disabled = false; cancelBtn.disabled = false;
+              reasonSel.disabled = false;
+              confirmBtn.textContent = 'Refund';
+              return;
+            }
             doRefund();
           });
         } else {
@@ -4130,7 +4295,8 @@
     (order.orderItems || []).forEach(item => {
       const info = item?.product?.productInfo;
       const name = info ? `${info.name} by ${info.brand}` : `Item #${item.id}`;
-      const isDrift = /drift|wood car freshener/i.test(name);
+      const productType = info?.productType || '';
+      const isDrift = productType === 'CarFreshenerRefill';
       const stockStatus = item?.product?.status;
       const stockBadge = {
         'OUT_OF_STOCK':              { text: 'Out of Stock',    color: '#ef4444' },
@@ -4414,6 +4580,8 @@
         document.querySelector('button[data-kt="customerTimelineEditCustomerProfileButton"]')?.click();
       }
       const nameField = await waitForField('input[data-kt="customerModalNameField"]');
+      // Give React a tick to populate the input value before we read it
+      await new Promise(r => setTimeout(r, 150));
 
       // Resolve customer from CRM if not cached
       const startId = getCustomerIdFromURL();
@@ -4434,20 +4602,21 @@
 
       const user = await getUser();
       const name = user ? toProperCase([user.firstName, user.lastName].filter(Boolean).join(' ')) : null;
+      const trimmed = nameField?.value?.trim() || '';
 
       if (name && nameField) {
         setReactValue(nameField, name);
         await new Promise(r => setTimeout(r, 300));
         document.querySelector('button[data-kt="modalFooterBasic_buttonPrimary"]')?.click();
         btn.textContent = '✔ Done'; btn.style.color = '#6ee7b7';
-      } else if (nameField && nameField.value.trim()) {
+      } else if (nameField && trimmed) {
         // Fallback: title-case the existing name (runs even if no CRM user / no token)
-        setReactValue(nameField, toProperCase(nameField.value.trim()));
+        setReactValue(nameField, toProperCase(trimmed));
         await new Promise(r => setTimeout(r, 300));
         document.querySelector('button[data-kt="modalFooterBasic_buttonPrimary"]')?.click();
         btn.textContent = '✔ Cased'; btn.style.color = '#fcd34d';
-      } else if (!user && !BEARER_TOKEN) {
-        // No CRM user and no token — dismiss modal, surface the token issue
+      } else if (!BEARER_TOKEN || !tokenValid) {
+        // No name to fall back on AND no working token — surface the token issue
         document.querySelector('button[data-kt="modalFooterBasic_buttonCancel"]')?.click();
         btn.textContent = '⚠ Token Expired'; btn.style.color = '#fca5a5';
       } else {
@@ -4468,7 +4637,7 @@
       resolve({ user }) {
         const s = user?.userAddress?.shipping;
         if (!s) return null;
-        return [s.street1, s.city, s.region, s.postcode].filter(Boolean).join(', ') || null;
+        return [s.street1, s.street2, s.city, s.region, s.postcode].filter(Boolean).join(', ') || null;
       },
     },
     {
@@ -5086,9 +5255,15 @@
     }
   }
 
-  /** Normalize address string for comparison. */
-  function _normalizeAddr(s) {
-    return (s || '').toLowerCase().replace(/[.,#\-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  /** Tokenize address into a sorted, punctuation-stripped word multiset for comparison. */
+  function _addrTokens(s) {
+    return (s || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(Boolean)
+      .sort()
+      .join(' ');
   }
 
   /** Compare user's current address against last order's shipping address. */
@@ -5098,7 +5273,7 @@
     if (!current?.street1 || !orderAddr?.street1) return null; // can't compare
     const currentFull = [current.street1, current.street2].filter(Boolean).join(' ');
     const orderFull   = [orderAddr.street1, orderAddr.street2].filter(Boolean).join(' ');
-    return _normalizeAddr(currentFull) === _normalizeAddr(orderFull);
+    return _addrTokens(currentFull) === _addrTokens(orderFull);
   }
 
   /** Fetch user details (subscription + fraud + gender + gweb) + last order and render the info bar. */
@@ -5131,13 +5306,17 @@
           const active = subs.find(s => s.status === 'Active') || subs[0];
           if (!active) return;
 
+          if (cachedCustomerCtx) {
+            cachedCustomerCtx._isAwaitCancellation = !!active.cashbirdDetails?.data?.isAwaitCancellation;
+          }
+
           // Fetch last order for address comparison + chargeback check
           fetchLastOrders(userId, (orders) => {
             if (getCustomerIdFromURL() !== startId) return; // stale
             const lastSub = (orders || []).find(o => o.type === 'SUBSCRIPTION' || !o.type);
             const addrMatch = lastSub ? _compareAddresses(user, lastSub) : null;
             const orderAddr = lastSub?.initialShippingAddress;
-            const orderAddrStr = orderAddr ? [orderAddr.street1, orderAddr.city, orderAddr.region, orderAddr.postcode].filter(Boolean).join(', ') : '';
+            const orderAddrStr = orderAddr ? [orderAddr.street1, orderAddr.street2, orderAddr.city, orderAddr.region, orderAddr.postcode].filter(Boolean).join(', ') : '';
             renderUserInfoBar(active, addrMatch, orderAddrStr);
 
             // Async: fraud tag
@@ -5224,10 +5403,9 @@
         if (err || !users) return;
         const sbUsers = users.filter(u => !u.origin || u.origin === 'SCENTBIRD');
         const exactMatch = sbUsers.find(u => u.email?.toLowerCase() === email.toLowerCase());
-        const sbUser = exactMatch || sbUsers[0];
-        if (!sbUser) return;
-        cachedCustomerCtx = { email, user: sbUser, _kustomerId: getCustomerIdFromURL() };
-        _fetchAndRenderSubBar(sbUser.id);
+        if (!exactMatch) return;
+        cachedCustomerCtx = { email, user: exactMatch, _kustomerId: getCustomerIdFromURL() };
+        _fetchAndRenderSubBar(exactMatch.id);
       });
     }, 800);
   }
