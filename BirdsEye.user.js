@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.8.0
+// @version      8.8.1
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -37,7 +37,7 @@
   let _refundCommentsPosted = new Set(); // tracks posted refund comments to avoid duplicates
   let _totalRefundedCents = 0;           // running total of refunds in this session
   let _totalRefundedCurrency = 'USD';    // currency of refunded charges
-  let _myOwnerId = null;                 // our CRM comment ownerId, discovered on first comment create
+  let _myAuthorEmail = null;             // our CRM comment author email, discovered on first comment create
 
   function clearCustomerCtx() {
     cachedCustomerCtx = null;
@@ -579,7 +579,7 @@
     query userComments($id: Long) {
       userById(id: $id) {
         data {
-          commentList { id created author comment zendeskUrl ownerId }
+          commentList { id created author { firstName lastName email } comment zendeskUrl }
         }
       }
     }`;
@@ -976,7 +976,7 @@
       const now = Date.now();
       const match = comments.find(c => {
         if (c.zendeskUrl !== zendeskUrl) return false;
-        if (_myOwnerId && c.ownerId !== _myOwnerId) return false;
+        if (_myAuthorEmail && c.author?.email !== _myAuthorEmail) return false;
         if (!c.created) return false;
         const age = now - new Date(c.created).getTime();
         return age <= THREE_DAYS_MS;
@@ -988,13 +988,13 @@
         CREATE_COMMENT_MUTATION,
         { input: { userId, comment: finalComment, zendeskUrl } },
         (data, err) => {
-          // Discover our ownerId after first successful create
-          if (!err && !_myOwnerId) {
+          // Discover our author email after first successful create
+          if (!err && !_myAuthorEmail) {
             fetchComments(userId, (freshComments) => {
               const ours = freshComments
                 .filter(c => c.zendeskUrl === zendeskUrl)
                 .sort((a, b) => new Date(b.created) - new Date(a.created))[0];
-              if (ours?.ownerId) _myOwnerId = ours.ownerId;
+              if (ours?.author?.email) _myAuthorEmail = ours.author.email;
             });
           }
           callback(err ? null : data?.createUserComment, err);
@@ -4511,30 +4511,29 @@
             statusEl.style.color = '#94a3b8';
             statusEl.textContent = 'Finding automated comment...';
 
-            // Find and delete auto-generated comment, then post ours
-            fetchComments(user.id, (comments) => {
-              const autoComment = comments.find(c =>
-                c.comment && order.orderNumber && c.comment.includes(order.orderNumber)
-              );
-
-              const postComment = () => {
-                statusEl.textContent = 'Posting comment...';
-                gqlMutate('createUserComment', CREATE_COMMENT_MUTATION,
-                  { input: { userId: user.id, comment: commentText, zendeskUrl: window.location.href } },
-                  (data, err) => {
-                    if (err) {
-                      statusEl.style.color = '#f59e0b';
-                      statusEl.textContent = '\u2714 Replacement created, but comment failed.';
-                    } else {
-                      statusEl.style.color = '#6ee7b7';
-                      statusEl.textContent = '\u2714 Done!';
-                    }
-                    confirmBtn.textContent = '\u2714 Done';
-                    setTimeout(() => { overlay.remove(); document.getElementById('sb-product-search-panel')?.remove(); }, 2000);
+            const postComment = () => {
+              statusEl.textContent = 'Posting comment...';
+              gqlMutate('createUserComment', CREATE_COMMENT_MUTATION,
+                { input: { userId: user.id, comment: commentText, zendeskUrl: window.location.href } },
+                (data, err) => {
+                  if (err) {
+                    statusEl.style.color = '#f59e0b';
+                    statusEl.textContent = '\u2714 Replacement created, but comment failed.';
+                  } else {
+                    statusEl.style.color = '#6ee7b7';
+                    statusEl.textContent = '\u2714 Done!';
                   }
-                );
-              };
+                  confirmBtn.textContent = '\u2714 Done';
+                  setTimeout(() => { overlay.remove(); document.getElementById('sb-product-search-panel')?.remove(); }, 2000);
+                }
+              );
+            };
 
+            statusEl.textContent = 'Finding automated comment...';
+            fetchComments(user.id, (comments) => {
+              const autoComment = order.orderNumber
+                ? comments.find(c => c.comment && c.comment.includes(order.orderNumber))
+                : null;
               if (autoComment) {
                 statusEl.textContent = 'Removing automated comment...';
                 gqlMutate('deleteUserComment', DELETE_COMMENT_MUTATION, { id: autoComment.id },
