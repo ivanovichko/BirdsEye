@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.8.1
+// @version      8.8.2
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -1222,12 +1222,17 @@
       const btnRow = document.createElement('div');
       btnRow.style.cssText = 'display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;';
 
+      const isReplacementOrder = order.type === 'REPLACEMENT' || order.type === 'REPLACEMENT_ORDER';
       const replBtn = document.createElement('button');
       replBtn.textContent = '\uD83D\uDD04 Replace';
-      replBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid #6366f1;background:transparent;color:#a5b4fc;font-weight:600;font-size:11px;cursor:pointer;';
-      replBtn.onmouseenter = () => replBtn.style.background = 'rgba(99,102,241,0.15)';
-      replBtn.onmouseleave = () => replBtn.style.background = 'transparent';
-      replBtn.onclick = () => showReplacementForm(order, ctx.user, ctx.totalOrders);
+      replBtn.disabled = isReplacementOrder;
+      replBtn.title = isReplacementOrder ? 'Cannot replace a replacement order' : '';
+      replBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${isReplacementOrder ? 'rgba(99,102,241,0.3)' : '#6366f1'};background:transparent;color:${isReplacementOrder ? 'rgba(165,180,252,0.4)' : '#a5b4fc'};font-weight:600;font-size:11px;cursor:${isReplacementOrder ? 'not-allowed' : 'pointer'};`;
+      if (!isReplacementOrder) {
+        replBtn.onmouseenter = () => replBtn.style.background = 'rgba(99,102,241,0.15)';
+        replBtn.onmouseleave = () => replBtn.style.background = 'transparent';
+        replBtn.onclick = () => showReplacementForm(order, ctx.user, ctx.totalOrders);
+      }
       btnRow.appendChild(replBtn);
 
       const ws = (order.warehouseOrder?.data?.status || order.status || '').toUpperCase();
