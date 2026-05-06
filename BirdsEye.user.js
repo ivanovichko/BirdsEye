@@ -1,21 +1,319 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.8.2
+// @version      8.9.0
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
+// @match        https://crm.scentbird.com/login/callback*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
 // @connect      crm.scentbird.com
 // @connect      www.scentbird.com
 // @connect      api.scentbird.com
+// @connect      scentbird.okta.com
 // @updateURL    https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/BirdsEye.user.js
 // @downloadURL  https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/BirdsEye.user.js
 // ==/UserScript==
 
 (function () {
   'use strict';
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // OKTA / OAUTH CONSTANTS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  const OKTA_CLIENT_ID    = '0oayh4u7fglCFfDbL697';
+  const OKTA_AUTHORIZE    = 'https://scentbird.okta.com/oauth2/v1/authorize';
+  const OKTA_TOKEN        = 'https://scentbird.okta.com/oauth2/v1/token';
+  const OKTA_REDIRECT_URI = 'https://crm.scentbird.com/login/callback';
+  const OKTA_SCOPE        = 'openid email groups offline_access';
+  const TOKENS_KEY        = 'birdseye_okta_tokens';   // GM_setValue bundle: {access_token, refresh_token, id_token}
+  const PENDING_AUTH_KEY  = 'birdseye_okta_pending';  // GM_setValue: {code_verifier, state} during a login flow
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PKCE + TOKEN STORAGE
+  // ══════════════════════════════════════════════════════════════════════════
+
+  function b64url(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function randomB64Url(byteLen) {
+    const buf = new Uint8Array(byteLen);
+    crypto.getRandomValues(buf);
+    return b64url(buf);
+  }
+
+  /** Returns a Promise<string> resolving to the SHA-256 base64url hash of `s`. */
+  async function sha256B64Url(s) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+    return b64url(new Uint8Array(digest));
+  }
+
+  function getTokens() {
+    try { return JSON.parse(GM_getValue(TOKENS_KEY, '') || 'null'); } catch(e) { return null; }
+  }
+  function setTokens(bundle) { GM_setValue(TOKENS_KEY, JSON.stringify(bundle)); }
+  function clearTokens()     { GM_deleteValue(TOKENS_KEY); }
+  // CRM's backend validates the ID token as its bearer (not the access token).
+  function getAccessToken()  { return getTokens()?.id_token || ''; }
+
+  function getPendingAuth() {
+    try { return JSON.parse(GM_getValue(PENDING_AUTH_KEY, '') || 'null'); } catch(e) { return null; }
+  }
+  function setPendingAuth(p) { GM_setValue(PENDING_AUTH_KEY, JSON.stringify(p)); }
+  function clearPendingAuth() { GM_deleteValue(PENDING_AUTH_KEY); }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // OAUTH CALLBACK HANDLER (runs in popup at crm.scentbird.com/login/callback)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  function handleOktaCallback() {
+    // Block CRM from consuming the auth code before we do.
+    const isOktaToken = (u) => typeof u === 'string' && u.indexOf('scentbird.okta.com/oauth2/v1/token') !== -1;
+    const origFetch = window.fetch;
+    window.fetch = function(input, init) {
+      const url = typeof input === 'string' ? input : input?.url;
+      if (isOktaToken(url)) return Promise.reject(new Error('blocked by BirdsEye'));
+      return origFetch.apply(this, arguments);
+    };
+    const origOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
+      if (isOktaToken(url)) { this._birdsEyeBlocked = true; return; }
+      return origOpen.apply(this, arguments);
+    };
+    const origSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function() {
+      if (this._birdsEyeBlocked) return;
+      return origSend.apply(this, arguments);
+    };
+
+    // Render an overlay status message; do not clobber CRM's mounted DOM.
+    let _statusEl = null;
+    const showStatus = (text, color) => {
+      try {
+        if (!_statusEl) {
+          _statusEl = document.createElement('div');
+          _statusEl.id = 'sb-okta-status';
+          _statusEl.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:#0f172a;color:#e2e8f0;font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;font-size:14px;';
+          (document.body || document.documentElement).appendChild(_statusEl);
+        }
+        _statusEl.style.color = color || '#94a3b8';
+        _statusEl.textContent = text;
+      } catch(e) {}
+    };
+    const showStatusWhenReady = (text, color) => {
+      if (document.body) showStatus(text, color);
+      else document.addEventListener('DOMContentLoaded', () => showStatus(text, color), { once: true });
+    };
+    showStatusWhenReady('Completing sign-in…');
+
+    const params = new URLSearchParams(location.search);
+    const code  = params.get('code');
+    const state = params.get('state');
+    const err   = params.get('error');
+
+    if (err) {
+      clearPendingAuth();
+      showStatus('Sign-in failed: ' + err, '#fca5a5');
+      setTimeout(() => { try { window.close(); } catch(e) {} }, 2500);
+      return;
+    }
+    const pending = getPendingAuth();
+    if (!code || !state || !pending || pending.state !== state) {
+      clearPendingAuth();
+      showStatus('Sign-in failed: invalid state', '#fca5a5');
+      setTimeout(() => { try { window.close(); } catch(e) {} }, 2500);
+      return;
+    }
+
+    const body = new URLSearchParams({
+      grant_type:    'authorization_code',
+      client_id:     OKTA_CLIENT_ID,
+      code,
+      code_verifier: pending.code_verifier,
+      redirect_uri:  OKTA_REDIRECT_URI,
+    }).toString();
+
+    GM_xmlhttpRequest({
+      method: 'POST', url: OKTA_TOKEN,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+      data: body,
+      onload(res) {
+        try {
+          const json = JSON.parse(res.responseText);
+          if (res.status >= 200 && res.status < 300 && json.access_token) {
+            setTokens({
+              access_token:  json.access_token,
+              refresh_token: json.refresh_token || null,
+              id_token:      json.id_token || null,
+            });
+            clearPendingAuth();
+            showStatus('Signed in. You can close this window.', '#6ee7b7');
+            setTimeout(() => { try { window.close(); } catch(e) {} }, 800);
+          } else {
+            clearPendingAuth();
+            showStatus('Token exchange failed: ' + (json.error_description || json.error || res.status), '#fca5a5');
+          }
+        } catch(e) {
+          clearPendingAuth();
+          showStatus('Token exchange parse error', '#fca5a5');
+        }
+      },
+      onerror() {
+        clearPendingAuth();
+        showStatus('Network error during token exchange', '#fca5a5');
+      },
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // OAUTH CALLBACK BRANCH — popup landed on crm.scentbird.com/login/callback
+  // ══════════════════════════════════════════════════════════════════════════
+  // Only intercept when WE started a flow; otherwise let CRM's own login proceed.
+  if (location.hostname === 'crm.scentbird.com' && location.pathname.startsWith('/login/callback')) {
+    const pending = getPendingAuth();
+    const urlState = new URLSearchParams(location.search).get('state');
+    if (pending && urlState && pending.state === urlState) {
+      handleOktaCallback();
+    }
+    return;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // OKTA REFRESH + CRM REQUEST WRAPPER
+  // ══════════════════════════════════════════════════════════════════════════
+
+  let _refreshInFlight = null;     // coalesces concurrent refreshes
+  let _reauthRequired  = false;    // set after a hard refresh failure; UI reads this
+
+  /** Refresh the access token using the stored refresh token. Returns Promise<string>. */
+  function refreshTokens() {
+    if (_refreshInFlight) return _refreshInFlight;
+    const tokens = getTokens();
+    if (!tokens?.refresh_token) {
+      _reauthRequired = true;
+      return Promise.reject(new Error('reauth_required'));
+    }
+    const body = new URLSearchParams({
+      grant_type:    'refresh_token',
+      client_id:     OKTA_CLIENT_ID,
+      refresh_token: tokens.refresh_token,
+      scope:         OKTA_SCOPE,
+    }).toString();
+
+    _refreshInFlight = new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'POST', url: OKTA_TOKEN,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+        data: body,
+        onload(res) {
+          try {
+            const json = JSON.parse(res.responseText);
+            if (res.status >= 200 && res.status < 300 && json.access_token) {
+              const newId = json.id_token || tokens.id_token || null;
+              setTokens({
+                access_token:  json.access_token,
+                refresh_token: json.refresh_token || tokens.refresh_token,
+                id_token:      newId,
+              });
+              _reauthRequired = false;
+              resolve(newId);
+            } else if (res.status >= 400 && res.status < 500) {
+              clearTokens();
+              _reauthRequired = true;
+              reject(new Error('reauth_required'));
+            } else {
+              reject(new Error('refresh_failed_' + res.status));
+            }
+          } catch(e) {
+            reject(new Error('refresh_parse_error'));
+          }
+        },
+        onerror() { reject(new Error('refresh_network_error')); },
+      });
+    }).finally(() => { _refreshInFlight = null; });
+
+    return _refreshInFlight;
+  }
+
+  /**
+   * Wraps GM_xmlhttpRequest. Auto-injects Authorization, refreshes-and-retries on 401.
+   * `opts` = { method, url, headers, data, onload(res), onerror() }
+   * onload/onerror semantics match GM_xmlhttpRequest's.
+   */
+  function crmRequest(opts) {
+    const send = (token, isRetry) => {
+      const headers = Object.assign({}, opts.headers || {});
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      GM_xmlhttpRequest({
+        method: opts.method || 'POST',
+        url:    opts.url,
+        headers,
+        data:   opts.data,
+        onload(res) {
+          if (res.status === 401 && !isRetry) {
+            refreshTokens().then(
+              (newToken) => send(newToken, true),
+              ()         => opts.onload && opts.onload(res)
+            );
+            return;
+          }
+          opts.onload && opts.onload(res);
+        },
+        onerror: opts.onerror,
+      });
+    };
+    send(getAccessToken(), false);
+  }
+
+  /** Kicks off Okta login flow: generates PKCE pair, opens popup to authorize URL. */
+  async function startOktaLogin() {
+    const code_verifier  = randomB64Url(48);
+    const code_challenge = await sha256B64Url(code_verifier);
+    const state          = randomB64Url(24);
+    const nonce          = randomB64Url(24);
+    setPendingAuth({ code_verifier, state });
+
+    const authUrl = OKTA_AUTHORIZE + '?' + new URLSearchParams({
+      client_id:             OKTA_CLIENT_ID,
+      response_type:         'code',
+      scope:                 OKTA_SCOPE,
+      redirect_uri:          OKTA_REDIRECT_URI,
+      state,
+      nonce,
+      code_challenge,
+      code_challenge_method: 'S256',
+    }).toString();
+
+    const w = 500, h = 700;
+    const left = (screen.width  - w) / 2;
+    const top  = (screen.height - h) / 2;
+    window.open(authUrl, 'sb_okta_login', `width=${w},height=${h},left=${left},top=${top}`);
+  }
+
+  function refreshOktaButtonState() {
+    const btn = document.getElementById('sb-crm-token-btn');
+    if (!btn) return;
+    const haveToken = !!getAccessToken();
+    if (haveToken && _reauthRequired) _reauthRequired = false;   // popup login completed
+    const state = !haveToken ? 'signin' : (_reauthRequired ? 'reauth' : 'in');
+    if (btn.dataset.authState === state) return;
+    btn.dataset.authState = state;
+    if (state === 'in') {
+      btn.textContent = '✔ Signed in';
+      btn.style.color = '#6ee7b7';
+    } else {
+      btn.textContent = '🔐 Sign in with Okta';
+      btn.style.color = state === 'reauth' ? '#fca5a5' : '#e2e8f0';
+    }
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // CONSTANTS & STATE
@@ -49,77 +347,39 @@
     _totalRefundedCurrency = 'USD';
   }
 
-  // ── Token storage ─────────────────────────────────────────────────────────
+  // ── Auth state ─────────────────────────────────────────────────────────────
+  // Token storage is in GM_setValue (TOKENS_KEY); see PKCE section above.
 
-  let BEARER_TOKEN = localStorage.getItem('sb_crm_token') || '';
-
+  /** Called when a request gets 401 even after a refresh attempt — refresh chain dead. */
   function handle401() {
-    BEARER_TOKEN = '';
-    localStorage.removeItem('sb_crm_token');
-    tokenValid = false;
-    const tokenBtn = document.getElementById('sb-crm-token-btn');
-    if (tokenBtn) {
-      tokenBtn.textContent = '⚠ Token Expired';
-      tokenBtn.style.color = '#fca5a5';
-    }
+    _reauthRequired = true;
+    refreshOktaButtonState();
   }
 
+  let _captchaRequired = false;
   function handle403() {
+    _captchaRequired = true;
     const tokenBtn = document.getElementById('sb-crm-token-btn');
     if (tokenBtn) {
       tokenBtn.textContent = '⚠ CRM Captcha';
       tokenBtn.style.color = '#f59e0b';
+      tokenBtn.dataset.authState = 'captcha';
     }
   }
 
-  let tokenValid = false;
-
-  /** Lightweight CRM call to validate the bearer token. Runs once per toolbar init. */
-  function validateToken() {
-    if (!BEARER_TOKEN) {
-      tokenValid = false;
-      console.warn('[BirdsEye] No token set');
-      return;
-    }
-    GM_xmlhttpRequest({
-      method: 'POST', url: GRAPHQL_URL,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
-      data: JSON.stringify({
-        operationName: 'userSearch', query: CRM_QUERY,
-        variables: { input: { filter: 'token-validation-check', statuses: [], page: { index: 1, size: 1 } } }
-      }),
-      onload(res) {
-        console.log('[BirdsEye] Token validation response:', res.status, res.responseText?.substring(0, 200));
-        if (res.status === 401) {
-          handle401();
-          return;
-        }
-        if (res.status === 403) {
-          handle403();
-          return;
-        }
-        try {
-          const json = JSON.parse(res.responseText);
-          if (json.errors) {
-            console.warn('[BirdsEye] Token validation GraphQL error:', json.errors);
-            handle401();
-            return;
-          }
-          tokenValid = true;
-          const tokenBtn = document.getElementById('sb-crm-token-btn');
-          if (tokenBtn) {
-            tokenBtn.textContent = '🔑 Token';
-            tokenBtn.style.color = '';
-          }
-          console.log('[BirdsEye] Token valid');
-        } catch(e) {
-          console.warn('[BirdsEye] Token validation parse error:', e);
-        }
-      },
-      onerror(err) {
-        console.warn('[BirdsEye] Token validation network error:', err);
+  /** Opens crm.scentbird.com in a popup so the user can solve the captcha. */
+  function openCaptchaPopup() {
+    const w = 500, h = 700;
+    const left = (screen.width  - w) / 2;
+    const top  = (screen.height - h) / 2;
+    const popup = window.open('https://crm.scentbird.com/', 'sb_crm_captcha', `width=${w},height=${h},left=${left},top=${top}`);
+    const poll = setInterval(() => {
+      if (!popup || popup.closed) {
+        clearInterval(poll);
+        _captchaRequired = false;
+        refreshOktaButtonState();   // user solved + closed; restore toolbar label
       }
-    });
+    }, 500);
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -726,19 +986,17 @@
   const COMMENT_OPS = ['createUserComment', 'deleteUserComment'];
 
   function gqlMutate(operationName, query, variables, callback) {
-    GM_xmlhttpRequest({
+    crmRequest({
       method: 'POST', url: GRAPHQL_URL,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+      headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({ operationName, query, variables }),
       onload(res) {
-        console.log('[BirdsEye]', operationName, '→', res.status, res.responseText?.substring(0, 300));
         if (res.status === 401) { handle401(); return callback(null, 'Token expired'); }
         if (res.status === 403) { handle403(); return callback(null, 'CRM captcha required — open CRM in browser'); }
         try {
           const json = JSON.parse(res.responseText);
           const errMsg = json?.errors?.[0]?.message;
           if (errMsg) return callback(null, errMsg);
-          // Auto-refresh info bar after data-changing mutations
           if (!COMMENT_OPS.includes(operationName)) refreshSubscriptionBar();
           callback(json.data);
         } catch(e) { callback(null, 'Parse error'); }
@@ -748,19 +1006,15 @@
   }
 
   function searchCRM(q, callback) {
-    if (!BEARER_TOKEN) {
-      callback(null, 'No token set — click 🔑 Token to add one.');
-      return;
-    }
-    GM_xmlhttpRequest({
+    if (!getAccessToken()) { callback(null, 'Not signed in — click Sign in with Okta.'); return; }
+    crmRequest({
       method: 'POST', url: GRAPHQL_URL,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+      headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({
         operationName: 'userSearch', query: CRM_QUERY,
         variables: { input: { filter: q, statuses: [], page: { index: 1, size: 50 } } }
       }),
       onload(res) {
-        console.log('[BirdsEye] userSearch →', res.status, res.responseText?.substring(0, 300));
         if (res.status === 401) { handle401(); callback(null, 'Token expired'); return; }
         if (res.status === 403) { handle403(); callback(null, 'CRM captcha required'); return; }
         try {
@@ -774,13 +1028,12 @@
   }
 
   function fetchLastOrders(userId, callback) {
-    if (!BEARER_TOKEN) { console.warn('[BirdsEye] fetchLastOrders blocked — no token'); return callback(null); }
-    GM_xmlhttpRequest({
+    if (!getAccessToken()) { return callback(null); }
+    crmRequest({
       method: 'POST', url: GRAPHQL_URL,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+      headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({ operationName: 'ordersByUserId', query: ORDERS_QUERY, variables: { id: userId } }),
       onload(res) {
-        console.log('[BirdsEye] ordersByUserId →', res.status, res.responseText?.substring(0, 300));
         if (res.status === 401) { handle401(); return callback(null, 'Token expired'); }
         if (res.status === 403) { handle403(); return callback(null); }
         try {
@@ -795,13 +1048,12 @@
   }
 
   function fetchCharges(userId, callback) {
-    if (!BEARER_TOKEN) { console.warn('[BirdsEye] fetchCharges blocked — no token'); return callback(null); }
-    GM_xmlhttpRequest({
+    if (!getAccessToken()) { return callback(null); }
+    crmRequest({
       method: 'POST', url: GRAPHQL_URL,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+      headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({ operationName: 'chargesByUserId', query: CHARGES_QUERY, variables: { id: userId } }),
       onload(res) {
-        console.log('[BirdsEye] chargesByUserId →', res.status, res.responseText?.substring(0, 300));
         if (res.status === 401) { handle401(); return callback(null); }
         if (res.status === 403) { handle403(); return callback(null); }
         try {
@@ -830,13 +1082,12 @@
   }
 
   function fetchActiveSubscription(userId, callback) {
-    if (!BEARER_TOKEN) { console.warn('[BirdsEye] fetchActiveSubscription blocked — no token'); return callback(null, 'No token'); }
-    GM_xmlhttpRequest({
+    if (!getAccessToken()) { return callback(null, 'No token'); }
+    crmRequest({
       method: 'POST', url: GRAPHQL_URL,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+      headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({ operationName: 'userDetailsById', query: USER_DETAILS_QUERY, variables: { id: userId } }),
       onload(res) {
-        console.log('[BirdsEye] subscriptionsByUserId →', res.status, res.responseText?.substring(0, 300));
         if (res.status === 401) { handle401(); return callback(null, 'Token expired'); }
         if (res.status === 403) { handle403(); return callback(null, 'CRM captcha required'); }
         try {
@@ -851,9 +1102,9 @@
   }
 
   function fetchComments(userId, callback) {
-    GM_xmlhttpRequest({
+    crmRequest({
       method: 'POST', url: GRAPHQL_URL,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+      headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({ operationName: 'userComments', query: COMMENTS_QUERY, variables: { id: userId } }),
       onload(res) {
         try {
@@ -1022,11 +1273,10 @@
    */
   async function loadCustomer(btn, callback) {
     // Token gate — check before anything else, including cache
-    if (!BEARER_TOKEN) {
+    if (!getAccessToken()) {
       const orig = btn.textContent;
-      btn.textContent = '\u2718 No token'; btn.style.color = '#fca5a5';
+      btn.textContent = '\u2718 Sign in'; btn.style.color = '#fca5a5';
       setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; }, 2000);
-      console.warn('[BirdsEye] loadCustomer blocked — no token set');
       return;
     }
 
@@ -1070,13 +1320,12 @@
   }
 
   function fetchQueue(userId, callback) {
-    if (!BEARER_TOKEN) { console.warn('[BirdsEye] fetchQueue blocked — no token'); return callback(null); }
-    GM_xmlhttpRequest({
+    if (!getAccessToken()) { return callback(null); }
+    crmRequest({
       method: 'POST', url: GRAPHQL_URL,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+      headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({ operationName: 'subscriptionQueue', query: QUEUE_QUERY, variables: { input: { userId } } }),
       onload(res) {
-        console.log('[BirdsEye] subscriptionQueue →', res.status, res.responseText?.substring(0, 300));
         if (res.status === 401) { handle401(); return callback(null); }
         if (res.status === 403) { handle403(); return callback(null); }
         try {
@@ -1673,62 +1922,6 @@
     setTimeout(() => input.focus(), 50);
   }
 
-  // ── Token Panel ───────────────────────────────────────────────────────────
-
-  function showTokenPanel() {
-    const panel = createPanel({ id: 'sb-token-panel', title: '🔑 CRM Bearer Token', width: 380 });
-    // Remove the default maxHeight since this is a short form
-    panel.style.maxHeight = 'none';
-
-    const hint = document.createElement('div');
-    hint.style.cssText = 'color:#94a3b8;font-size:12px;margin-bottom:8px;';
-    hint.textContent = 'Saved to localStorage — never hardcoded.';
-    panel.appendChild(hint);
-
-    const textarea = document.createElement('textarea');
-    textarea.rows = 5;
-    textarea.placeholder = BEARER_TOKEN ? '(token set — paste new to replace)' : 'eyJra…';
-    textarea.style.cssText = `
-      width:100%;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);
-      background:#2a2a3e;color:#e2e8f0;font-size:11px;font-family:monospace;
-      resize:vertical;box-sizing:border-box;outline:none;
-    `;
-    panel.appendChild(textarea);
-
-    const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:8px;margin-top:8px;';
-
-    const saveBtn = document.createElement('button');
-    saveBtn.textContent = 'Save';
-    saveBtn.style.cssText = 'flex:1;padding:7px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:13px;cursor:pointer;';
-
-    const clearBtn = document.createElement('button');
-    clearBtn.textContent = 'Clear';
-    clearBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#fca5a5;font-size:13px;cursor:pointer;';
-
-    const statusEl = makeStatusEl();
-    statusEl.style.color = '#6ee7b7';
-
-    saveBtn.onclick = () => {
-      const val = textarea.value.trim();
-      if (!val) { statusEl.style.color = '#fca5a5'; statusEl.textContent = 'Paste a token first.'; return; }
-      BEARER_TOKEN = val; localStorage.setItem('sb_crm_token', val);
-      statusEl.style.color = '#6ee7b7';
-      statusEl.textContent = '✔ Saved.';
-      setTimeout(() => removePanel('sb-token-panel'), 1000);
-    };
-    clearBtn.onclick = () => {
-      BEARER_TOKEN = ''; localStorage.removeItem('sb_crm_token');
-      textarea.value = '';
-      statusEl.style.color = '#fca5a5';
-      statusEl.textContent = 'Cleared.';
-    };
-
-    btnRow.appendChild(saveBtn); btnRow.appendChild(clearBtn);
-    panel.appendChild(btnRow);
-    panel.appendChild(statusEl);
-  }
-
   // ── Last Orders Panel ─────────────────────────────────────────────────────
 
   function showLastOrderPanel(btn) {
@@ -2269,9 +2462,9 @@
     let _availableCredits = 0;
 
     // Fetch subscription for credits
-    GM_xmlhttpRequest({
+    crmRequest({
       method: 'POST', url: GRAPHQL_URL,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+      headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({ operationName: 'userDetailsById', query: USER_DETAILS_QUERY, variables: { id: user.id } }),
       onload(res) {
         try {
@@ -4078,17 +4271,16 @@
       if (!q || q.length < 2) { resultsEl.innerHTML = '<div style="color:#94a3b8;font-size:12px;">Type at least 2 characters.</div>'; return; }
       resultsEl.innerHTML = '<div style="color:#94a3b8;font-size:12px;">Searching…</div>';
 
-      GM_xmlhttpRequest({
+      crmRequest({
         method: 'POST', url: GRAPHQL_URL,
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+        headers: { 'Content-Type': 'application/json' },
         data: JSON.stringify({
           operationName: 'productSuggestion',
           query: PRODUCT_SEARCH_QUERY,
           variables: { input: { name: q, sections: ['Subscription', 'Extras', 'AddonSubscription'], statuses: ['LIVE', 'OUT_OF_STOCK', 'NOT_AVAILABLE_FOR_NEW_ORDERS'] } },
         }),
         onload(res) {
-          console.log('[BirdsEye] Product search response:', res.status, res.responseText?.substring(0, 500));
-          if (res.status === 401) { handle401(); resultsEl.innerHTML = '<div style="color:#fca5a5;">Token expired.</div>'; return; }
+          if (res.status === 401) { handle401(); resultsEl.innerHTML = '<div style="color:#fca5a5;">Sign in required.</div>'; return; }
           if (res.status === 403) { handle403(); resultsEl.innerHTML = '<div style="color:#fca5a5;">CRM captcha required.</div>'; return; }
           try {
             const json = JSON.parse(res.responseText);
@@ -4466,9 +4658,9 @@
         },
       };
 
-      GM_xmlhttpRequest({
+      crmRequest({
         method: 'POST', url: GRAPHQL_URL,
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+        headers: { 'Content-Type': 'application/json' },
         data: JSON.stringify({ operationName: 'replacementSave', query: REPLACEMENT_MUTATION, variables }),
         onload(res) {
           if (res.status === 401) {
@@ -4619,10 +4811,10 @@
         await new Promise(r => setTimeout(r, 300));
         document.querySelector('button[data-kt="modalFooterBasic_buttonPrimary"]')?.click();
         btn.textContent = '✔ Cased'; btn.style.color = '#fcd34d';
-      } else if (!BEARER_TOKEN || !tokenValid) {
-        // No name to fall back on AND no working token — surface the token issue
+      } else if (!getAccessToken() || _reauthRequired) {
+        // No name to fall back on AND no working token — surface the auth issue
         document.querySelector('button[data-kt="modalFooterBasic_buttonCancel"]')?.click();
-        btn.textContent = '⚠ Token Expired'; btn.style.color = '#fca5a5';
+        btn.textContent = '⚠ Sign in with Okta'; btn.style.color = '#fca5a5';
       } else {
         document.querySelector('button[data-kt="modalFooterBasic_buttonCancel"]')?.click();
         btn.textContent = '✘ Not Found'; btn.style.color = '#fca5a5';
@@ -4893,9 +5085,9 @@
         };
 
         if (needsSubscription) {
-          GM_xmlhttpRequest({
+          crmRequest({
             method: 'POST', url: GRAPHQL_URL,
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+            headers: { 'Content-Type': 'application/json' },
             data: JSON.stringify({ operationName: 'userDetailsById', query: USER_DETAILS_QUERY, variables: { id: user.id } }),
             onload(res) {
               try {
@@ -5089,7 +5281,7 @@
     addToolbarButton('sb-open-account-btn', '🔗 Open Account', (btn) => {
       const user = cachedCustomerCtx?.user;
       if (!user?.id) {
-        const label = (!BEARER_TOKEN || !tokenValid) ? '⚠ Token Expired' : '✘ No customer';
+        const label = !getAccessToken() ? '⚠ Sign in with Okta' : '✘ No customer';
         btn.textContent = label;
         btn.style.color = '#fca5a5';
         setTimeout(() => { btn.textContent = '🔗 Open Account'; btn.style.color = ''; }, 2000);
@@ -5097,10 +5289,11 @@
       }
       window.open(`https://crm.scentbird.com/user/${user.id}/profile/subscription`, '_blank');
     });
-    addToolbarButton('sb-crm-token-btn', '🔑 Token', () => {
-      if (document.getElementById('sb-token-panel')) { removePanel('sb-token-panel'); return; }
-      showTokenPanel();
+    addToolbarButton('sb-crm-token-btn', '🔐 Sign in with Okta', () => {
+      if (_captchaRequired) openCaptchaPopup();
+      else startOktaLogin();
     });
+    refreshOktaButtonState();
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -5286,9 +5479,9 @@
     const startId = getCustomerIdFromURL();
 
     // Single query: subscriptions + fraud + gweb + gender + shipping addr
-    GM_xmlhttpRequest({
+    crmRequest({
       method: 'POST', url: GRAPHQL_URL,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+      headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({ operationName: 'userDetailsById', query: USER_DETAILS_QUERY, variables: { id: userId } }),
       onload(res) {
         if (getCustomerIdFromURL() !== startId) return; // stale
@@ -5333,9 +5526,9 @@
             }
 
             // Async: chargeback tag
-            GM_xmlhttpRequest({
+            crmRequest({
               method: 'POST', url: GRAPHQL_URL,
-              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BEARER_TOKEN },
+              headers: { 'Content-Type': 'application/json' },
               data: JSON.stringify({ operationName: 'chargesByUserId', query: CHARGES_QUERY, variables: { id: userId } }),
               onload(cRes) {
                 if (getCustomerIdFromURL() !== startId) return; // stale
@@ -5418,8 +5611,6 @@
   // MUTATION OBSERVER — wire everything on header appear
   // ══════════════════════════════════════════════════════════════════════════
 
-  let tokenValidatedForSession = false;
-
   const observer = new MutationObserver(() => {
     if (toolbarEl && !document.body.contains(toolbarEl)) {
       toolbarEl = null;
@@ -5430,11 +5621,8 @@
     if (!ensureToolbar()) return;
     registerFillName();
     registerCrmButtons();
+    refreshOktaButtonState();
     refreshUserInfoBar();
-    if (!tokenValidatedForSession && BEARER_TOKEN) {
-      tokenValidatedForSession = true;
-      validateToken();
-    }
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
