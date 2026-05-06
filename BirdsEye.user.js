@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.9.0
+// @version      8.10.0
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -101,7 +101,7 @@
         if (!_statusEl) {
           _statusEl = document.createElement('div');
           _statusEl.id = 'sb-okta-status';
-          _statusEl.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:#0f172a;color:#e2e8f0;font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;font-size:14px;';
+          _statusEl.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:#0f172a;color:#e2e8f0;font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;font-size:var(--sb-fs-14);';
           (document.body || document.documentElement).appendChild(_statusEl);
         }
         _statusEl.style.color = color || '#94a3b8';
@@ -185,6 +185,28 @@
     }
     return;
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // GLOBAL CSS — font-size variables. Single knob: --sb-fs-scale.
+  // Custom properties bypass `all:initial` and inherit into panels.
+  // ══════════════════════════════════════════════════════════════════════════
+  (function injectStyles() {
+    if (document.getElementById('sb-style')) return;
+    const style = document.createElement('style');
+    style.id = 'sb-style';
+    style.textContent = `
+      :root {
+        --sb-fs-scale: 1.15;
+        --sb-fs-9:  calc(9px  * var(--sb-fs-scale));
+        --sb-fs-10: calc(10px * var(--sb-fs-scale));
+        --sb-fs-11: calc(11px * var(--sb-fs-scale));
+        --sb-fs-12: calc(12px * var(--sb-fs-scale));
+        --sb-fs-13: calc(13px * var(--sb-fs-scale));
+        --sb-fs-14: calc(14px * var(--sb-fs-scale));
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  })();
 
   // ══════════════════════════════════════════════════════════════════════════
   // OKTA REFRESH + CRM REQUEST WRAPPER
@@ -303,12 +325,20 @@
     if (!btn) return;
     const haveToken = !!getAccessToken();
     if (haveToken && _reauthRequired) _reauthRequired = false;   // popup login completed
-    const state = !haveToken ? 'signin' : (_reauthRequired ? 'reauth' : 'in');
+    const state = _captchaRequired ? 'captcha'
+                : !haveToken        ? 'signin'
+                : _reauthRequired   ? 'reauth'
+                                    : 'in';
     if (btn.dataset.authState === state) return;
     btn.dataset.authState = state;
     if (state === 'in') {
-      btn.textContent = '✔ Signed in';
-      btn.style.color = '#6ee7b7';
+      btn.style.display = 'none';
+      return;
+    }
+    btn.style.display = '';
+    if (state === 'captcha') {
+      btn.textContent = '⚠ CRM Captcha';
+      btn.style.color = '#f59e0b';
     } else {
       btn.textContent = '🔐 Sign in with Okta';
       btn.style.color = state === 'reauth' ? '#fca5a5' : '#e2e8f0';
@@ -359,27 +389,46 @@
   let _captchaRequired = false;
   function handle403() {
     _captchaRequired = true;
-    const tokenBtn = document.getElementById('sb-crm-token-btn');
-    if (tokenBtn) {
-      tokenBtn.textContent = '⚠ CRM Captcha';
-      tokenBtn.style.color = '#f59e0b';
-      tokenBtn.dataset.authState = 'captcha';
-    }
+    refreshOktaButtonState();
   }
 
-  /** Opens crm.scentbird.com in a popup so the user can solve the captcha. */
+  /** Opens crm.scentbird.com in a popup and auto-closes once a CRM probe stops 403'ing. */
   function openCaptchaPopup() {
     const w = 500, h = 700;
     const left = (screen.width  - w) / 2;
     const top  = (screen.height - h) / 2;
     const popup = window.open('https://crm.scentbird.com/', 'sb_crm_captcha', `width=${w},height=${h},left=${left},top=${top}`);
-    const poll = setInterval(() => {
+
+    const cleanup = () => {
+      _captchaRequired = false;
+      refreshOktaButtonState();
+    };
+
+    // Watch for manual close.
+    const closeWatch = setInterval(() => {
       if (!popup || popup.closed) {
-        clearInterval(poll);
-        _captchaRequired = false;
-        refreshOktaButtonState();   // user solved + closed; restore toolbar label
+        clearInterval(closeWatch);
+        clearInterval(probe);
+        cleanup();
       }
     }, 500);
+
+    // Probe CRM every 3s with a no-op GraphQL call. Non-403 status = captcha resolved.
+    const probe = setInterval(() => {
+      GM_xmlhttpRequest({
+        method: 'POST', url: GRAPHQL_URL,
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getAccessToken() },
+        data: JSON.stringify({ query: '{ __typename }' }),
+        onload(res) {
+          if (res.status !== 403) {
+            clearInterval(probe);
+            clearInterval(closeWatch);
+            try { popup?.close(); } catch(e) {}
+            cleanup();
+          }
+        },
+      });
+    }, 3000);
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -490,7 +539,7 @@
       background:#1e1e2e;border-radius:10px;padding:20px 24px;width:${width}px;
       max-height:85vh;overflow-y:auto;
       border:1px solid rgba(255,255,255,0.1);box-shadow:0 20px 60px rgba(0,0,0,0.7);
-      color:#e2e8f0;font-family:Arial,sans-serif;font-size:14px;box-sizing:border-box;
+      color:#e2e8f0;font-family:Arial,sans-serif;font-size:var(--sb-fs-14);box-sizing:border-box;
     `;
     if (title) {
       const hdr = document.createElement('div');
@@ -499,7 +548,7 @@
         margin:-20px -24px 12px;padding:14px 24px;
         background:#1e1e2e;
         display:flex;justify-content:space-between;align-items:center;
-        font-weight:700;font-size:14px;
+        font-weight:700;font-size:var(--sb-fs-14);
         border-bottom:1px solid rgba(255,255,255,0.06);
       `;
       const span = document.createElement('span');
@@ -507,7 +556,7 @@
       hdr.appendChild(span);
       const xBtn = document.createElement('button');
       xBtn.textContent = 'Close \u2715';
-      xBtn.style.cssText = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#94a3b8;font-size:11px;font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
+      xBtn.style.cssText = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#94a3b8;font-size:var(--sb-fs-11);font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
       xBtn.onmouseenter = () => xBtn.style.background = 'rgba(255,255,255,0.15)';
       xBtn.onmouseleave = () => xBtn.style.background = 'rgba(255,255,255,0.08)';
       xBtn.onclick = () => overlay.remove();
@@ -518,15 +567,21 @@
     return { overlay, box };
   }
 
-  /** Fixed-position floating panel. Returns panel element (already in DOM). */
-  function createPanel({ id, title, width = 380, right = 20, maxHeight = 680, onClose }) {
+  /** Fixed-position floating panel. Returns panel element (already in DOM).
+   *  Options: centered (override right-anchored placement) and draggable (grab header to move). */
+  function createPanel({ id, title, width = 380, right = 20, maxHeight = 680, centered = false, draggable = false, onClose }) {
     removePanel(id);
     const panel = document.createElement('div');
     panel.id = id;
+    const initLeft = centered ? Math.max(20, Math.floor((window.innerWidth  - width)         / 2)) : null;
+    const initTop  = centered ? Math.max(40, Math.floor((window.innerHeight - maxHeight) / 3)) : 60;
+    const placement = centered
+      ? `left:${initLeft}px;top:${initTop}px;`
+      : `top:${initTop}px;right:${right}px;`;
     panel.style.cssText = `
-      all:initial;position:fixed;top:60px;right:${right}px;width:${width}px;max-height:${maxHeight}px;
+      all:initial;position:fixed;${placement}width:${width}px;max-height:${maxHeight}px;
       overflow-y:auto;background:#1e1e2e;color:#e2e8f0;font-family:Arial,sans-serif;
-      font-size:13px;border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,0.5);
+      font-size:var(--sb-fs-13);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,0.5);
       padding:14px;z-index:999999;border:1px solid rgba(255,255,255,0.1);box-sizing:border-box;
     `;
     const hdr = document.createElement('div');
@@ -536,32 +591,112 @@
       background:#1e1e2e;
       display:flex;align-items:center;justify-content:space-between;
       border-bottom:1px solid rgba(255,255,255,0.06);
+      ${draggable ? 'cursor:grab;user-select:none;' : ''}
     `;
-    hdr.innerHTML = `<span style="font-weight:700;font-size:14px;">${title}</span>`;
+    hdr.innerHTML = `<span style="font-weight:700;font-size:var(--sb-fs-14);">${title}</span>`;
     const closeBtn = document.createElement('button');
     closeBtn.textContent = 'Close \u2715';
-    closeBtn.style.cssText = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#94a3b8;font-size:11px;font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
+    closeBtn.style.cssText = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#94a3b8;font-size:var(--sb-fs-11);font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
     closeBtn.onmouseenter = () => closeBtn.style.background = 'rgba(255,255,255,0.15)';
     closeBtn.onmouseleave = () => closeBtn.style.background = 'rgba(255,255,255,0.08)';
     closeBtn.onclick = () => { removePanel(id); onClose?.(); };
     hdr.appendChild(closeBtn);
     panel.appendChild(hdr);
     document.body.appendChild(panel);
+
+    if (draggable) attachPanelDrag(panel, hdr, closeBtn);
     return panel;
+  }
+
+  /** Wire mousedown-on-header drag for a panel. Switches the panel to absolute left/top. */
+  function attachPanelDrag(panel, hdr, closeBtn) {
+    let dragging = false, startX = 0, startY = 0, originX = 0, originY = 0;
+    const onDown = (e) => {
+      if (e.target === closeBtn || closeBtn.contains(e.target)) return;
+      dragging = true;
+      const rect = panel.getBoundingClientRect();
+      // Switch to left/top so we can move freely (drop right anchor if any).
+      panel.style.left  = rect.left + 'px';
+      panel.style.top   = rect.top  + 'px';
+      panel.style.right = 'auto';
+      originX = rect.left;
+      originY = rect.top;
+      startX = e.clientX;
+      startY = e.clientY;
+      hdr.style.cursor = 'grabbing';
+      e.preventDefault();
+    };
+    const onMove = (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      const rect = panel.getBoundingClientRect();
+      // Clamp so the title bar always stays grabbable inside the viewport.
+      const minLeft = -rect.width  + 80;
+      const maxLeft = window.innerWidth  - 80;
+      const minTop  = 0;
+      const maxTop  = window.innerHeight - 40;
+      const nx = Math.min(maxLeft, Math.max(minLeft, originX + dx));
+      const ny = Math.min(maxTop,  Math.max(minTop,  originY + dy));
+      panel.style.left = nx + 'px';
+      panel.style.top  = ny + 'px';
+    };
+    const onUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      hdr.style.cursor = 'grab';
+    };
+    hdr.addEventListener('mousedown', onDown);
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   }
 
   /** Small user identity row used in panels. */
   function renderUserRow(user) {
     const row = document.createElement('div');
-    row.style.cssText = 'color:#94a3b8;font-size:11px;margin-bottom:12px;';
+    row.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-11);margin-bottom:12px;';
     row.textContent = `${user.firstName || ''} ${user.lastName || ''} · ${user.email}`.trim();
     return row;
+  }
+
+  /** Returns a single-line formatted shipping address, or '' if shipping is missing. */
+  function formatShippingAddress(shipping) {
+    if (!shipping) return '';
+    const street = [shipping.street1, shipping.street2].filter(Boolean).join(', ');
+    const city   = [shipping.city, shipping.region, shipping.postcode].filter(Boolean).join(', ');
+    return [street, city].filter(Boolean).join(' · ');
+  }
+
+  /** High-contrast color for a tracking-event status. */
+  function trackingStatusColor(status) {
+    const s = (status || '').toUpperCase();
+    if (s === 'DELIVERED')                                                       return '#86efac'; // bright lime
+    if (s === 'OUT_FOR_DELIVERY' || s === 'IN_TRANSIT' || s === 'SHIPPED')       return '#fcd34d'; // warm yellow
+    if (s === 'RETURNED' || s === 'LOST' || s === 'FAILED' || s === 'EXCEPTION') return '#fca5a5'; // red
+    return '#e2e8f0'; // default bright
+  }
+
+  /** Returns a small inline pill for non-LIVE product statuses, or null if status is LIVE/missing. */
+  function makeProductStatusPlaque(status) {
+    if (!status || status === 'LIVE') return null;
+    const palette = {
+      OUT_OF_STOCK:                  { bg: 'rgba(245,158,11,0.15)', fg: '#fcd34d', border: 'rgba(245,158,11,0.4)' },
+      NOT_AVAILABLE_FOR_NEW_ORDERS:  { bg: 'rgba(245,158,11,0.15)', fg: '#fcd34d', border: 'rgba(245,158,11,0.4)' },
+      INTERNAL_USE:                  { bg: 'rgba(239,68,68,0.15)',  fg: '#fca5a5', border: 'rgba(239,68,68,0.4)'  },
+      DISCONTINUED:                  { bg: 'rgba(239,68,68,0.15)',  fg: '#fca5a5', border: 'rgba(239,68,68,0.4)'  },
+    };
+    const c = palette[status] || { bg: 'rgba(148,163,184,0.15)', fg: '#cbd5e1', border: 'rgba(148,163,184,0.4)' };
+    const label = status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, ch => ch.toUpperCase());
+    const span = document.createElement('span');
+    span.textContent = label;
+    span.style.cssText = `background:${c.bg};color:${c.fg};border:1px solid ${c.border};font-size:var(--sb-fs-10);font-weight:600;padding:1px 5px;border-radius:4px;`;
+    return span;
   }
 
   /** Status log widget for sequential operations. Call log.log(msg, color). */
   function makeStatusLog() {
     const el = document.createElement('div');
-    el.style.cssText = 'margin-top:10px;font-size:11px;line-height:1.8;';
+    el.style.cssText = 'margin-top:10px;font-size:var(--sb-fs-11);line-height:1.8;';
     el.log = (msg, color = '#94a3b8') => {
       const row = document.createElement('div');
       row.style.color = color;
@@ -575,7 +710,7 @@
     const b = document.createElement('button');
     b.textContent = label;
     b.title = 'Copy';
-    b.style.cssText = 'background:none;border:none;cursor:pointer;color:#818cf8;font-size:13px;padding:0 4px;flex-shrink:0;';
+    b.style.cssText = 'background:none;border:none;cursor:pointer;color:#818cf8;font-size:var(--sb-fs-13);padding:0 4px;flex-shrink:0;';
     b.onclick = () => {
       const text = typeof textOrFn === 'function' ? textOrFn() : textOrFn;
       navigator.clipboard.writeText(text);
@@ -588,7 +723,7 @@
   /** Section label used in forms. */
   function makeLabel(text) {
     const l = document.createElement('div');
-    l.style.cssText = 'font-size:12px;color:#64748b;font-weight:600;letter-spacing:0.05em;margin-bottom:5px;margin-top:12px;';
+    l.style.cssText = 'font-size:var(--sb-fs-12);color:#64748b;font-weight:600;letter-spacing:0.05em;margin-bottom:5px;margin-top:12px;';
     l.textContent = text;
     return l;
   }
@@ -596,7 +731,7 @@
   /** Select dropdown for forms. */
   function makeSelect(options, selected) {
     const s = document.createElement('select');
-    s.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:13px;box-sizing:border-box;cursor:pointer;';
+    s.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-13);box-sizing:border-box;cursor:pointer;';
     options.forEach(o => {
       const opt = document.createElement('option');
       opt.value = o.value;
@@ -610,14 +745,14 @@
   /** Status element for panel footers. */
   function makeStatusEl() {
     const el = document.createElement('div');
-    el.style.cssText = 'font-size:12px;min-height:16px;margin-top:10px;color:#94a3b8;';
+    el.style.cssText = 'font-size:var(--sb-fs-12);min-height:16px;margin-top:10px;color:#94a3b8;';
     return el;
   }
 
   /** Styled tag (used in info bar and elsewhere). */
   function makeTag(label, color, bg, border) {
     const t = document.createElement('span');
-    t.style.cssText = `display:inline-flex;align-items:center;padding:2px 7px;border-radius:4px;font-weight:600;font-size:10px;color:${color};background:${bg};border:1px solid ${border};white-space:nowrap;`;
+    t.style.cssText = `display:inline-flex;align-items:center;padding:2px 7px;border-radius:4px;font-weight:600;font-size:var(--sb-fs-10);color:${color};background:${bg};border:1px solid ${border};white-space:nowrap;`;
     t.textContent = label;
     return t;
   }
@@ -631,7 +766,7 @@
     cancelBtn.textContent = 'Cancel';
     cancelBtn.style.cssText = `
       padding:7px 16px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);
-      background:transparent;color:#e2e8f0;font-size:13px;cursor:pointer;flex:1;
+      background:transparent;color:#e2e8f0;font-size:var(--sb-fs-13);cursor:pointer;flex:1;
     `;
     cancelBtn.onclick = onCancel;
 
@@ -639,7 +774,7 @@
     confirmBtn.textContent = confirmLabel;
     confirmBtn.style.cssText = `
       padding:7px 16px;border-radius:6px;border:none;
-      background:${confirmColor};color:#fff;font-weight:700;font-size:13px;cursor:pointer;flex:1;
+      background:${confirmColor};color:#fff;font-weight:700;font-size:var(--sb-fs-13);cursor:pointer;flex:1;
     `;
     confirmBtn.onmouseenter = () => confirmBtn.style.filter = 'brightness(0.85)';
     confirmBtn.onmouseleave = () => confirmBtn.style.filter = '';
@@ -693,7 +828,7 @@
     btn.id = id;
     btn.textContent = label;
     btn.style.cssText = `
-      font-size:13px;font-weight:600;padding:5px 12px;border-radius:4px;
+      font-size:var(--sb-fs-13);font-weight:600;padding:5px 12px;border-radius:4px;
       border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.07);
       color:#e2e8f0;cursor:pointer;white-space:nowrap;transition:background 0.15s;
     `;
@@ -817,7 +952,7 @@
           fraudInfo { status }
           gwebLink
           gender
-          userAddress { shipping { id } }
+          userAddress { shipping { id street1 street2 city region postcode country } }
           subscriptionList {
             id status subscribed nextBillingDate planName subscriptionDate subscriptionEndDate
             cashbirdDetails { data { billingDay nextBillingDate isAwaitCancellation } }
@@ -966,7 +1101,7 @@
             processedSubscriptionOrder { id status }
             productList {
               tradingItem {
-                id sku
+                id sku status
                 productInfo { id name brand upchargePrice productType }
               }
               source
@@ -1392,21 +1527,27 @@
       oi.product?.productInfo?.productType === 'PERFUME_CASE_UPCHARGE' || oi.productType === 'PERFUME_CASE_UPCHARGE'
     );
     hdr.innerHTML = `
-      <span style="color:#94a3b8;font-size:11px;">${orderMonthLabel(order)}</span>
-      <span style="color:${statusColor};font-weight:600;font-size:11px;">${order.warehouseOrder?.data?.status || order.status}</span>
-      ${(order.type && order.type !== 'SUBSCRIPTION') ? `<span style="color:#f59e0b;font-size:11px;font-weight:600;">${order.type.replace(/_/g,' ')}</span>` : ''}
-      ${hasWelcomeKit ? '<span style="background:rgba(99,102,241,0.2);color:#a5b4fc;font-size:10px;font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(99,102,241,0.4);">Welcome Kit</span>' : ''}
-      ${hasSamples ? '<span style="background:rgba(245,158,11,0.15);color:#fcd34d;font-size:10px;font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(245,158,11,0.3);">Samples</span>' : ''}
-      ${hasCase ? '<span style="background:rgba(99,102,241,0.15);color:#a5b4fc;font-size:10px;font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(99,102,241,0.3);">Case</span>' : ''}
+      <span style="color:#94a3b8;font-size:var(--sb-fs-11);">${orderMonthLabel(order)}</span>
+      <span style="color:${statusColor};font-weight:600;font-size:var(--sb-fs-11);">${order.warehouseOrder?.data?.status || order.status}</span>
+      ${(order.type && order.type !== 'SUBSCRIPTION') ? `<span style="color:#f59e0b;font-size:var(--sb-fs-11);font-weight:600;">${order.type.replace(/_/g,' ')}</span>` : ''}
+      ${hasWelcomeKit ? '<span style="background:rgba(99,102,241,0.2);color:#a5b4fc;font-size:var(--sb-fs-10);font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(99,102,241,0.4);">Welcome Kit</span>' : ''}
+      ${hasSamples ? '<span style="background:rgba(245,158,11,0.15);color:#fcd34d;font-size:var(--sb-fs-10);font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(245,158,11,0.3);">Samples</span>' : ''}
+      ${hasCase ? '<span style="background:rgba(99,102,241,0.15);color:#a5b4fc;font-size:var(--sb-fs-10);font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(99,102,241,0.3);">Case</span>' : ''}
     `;
     hdr.appendChild(makeCopyBtn(() => orderCopyText(order), '📋 Copy'));
     wrap.appendChild(hdr);
 
-    // Product lines
-    orderProductLines(order).forEach(line => {
+    // Product lines — append a plaque if the product status is anything but LIVE.
+    (order.orderItems || []).forEach(i => {
+      const p = i?.product?.productInfo;
+      if (!p) return;
       const d = document.createElement('div');
-      d.style.cssText = 'color:#cbd5e1;font-size:12px;margin-bottom:2px;';
-      d.textContent = line;
+      d.style.cssText = 'color:#cbd5e1;font-size:var(--sb-fs-12);margin-bottom:2px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+      const text = document.createElement('span');
+      text.textContent = `${p.name} by ${p.brand}`;
+      d.appendChild(text);
+      const plaque = makeProductStatusPlaque(i.product?.status);
+      if (plaque) d.appendChild(plaque);
       wrap.appendChild(d);
     });
 
@@ -1422,11 +1563,11 @@
         const link = document.createElement('a');
         link.href = trackUrl; link.target = '_blank';
         link.textContent = trackNo || 'Track';
-        link.style.cssText = 'color:#818cf8;font-size:11px;text-decoration:none;';
+        link.style.cssText = 'color:#818cf8;font-size:var(--sb-fs-11);text-decoration:none;';
         tRow.appendChild(link);
       } else {
         const span = document.createElement('span');
-        span.style.cssText = 'color:#818cf8;font-size:11px;';
+        span.style.cssText = 'color:#818cf8;font-size:var(--sb-fs-11);';
         span.textContent = trackNo;
         tRow.appendChild(span);
       }
@@ -1435,7 +1576,7 @@
         const linkBtn = document.createElement('button');
         linkBtn.textContent = '🔗';
         linkBtn.title = 'Copy tracking link';
-        linkBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:#818cf8;font-size:13px;padding:0 4px;flex-shrink:0;';
+        linkBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:#818cf8;font-size:var(--sb-fs-13);padding:0 4px;flex-shrink:0;';
         linkBtn.onclick = () => {
           navigator.clipboard.write([
             new ClipboardItem({
@@ -1451,14 +1592,17 @@
       wrap.appendChild(tRow);
     }
 
-    // Last 2 tracking events
+    // Last 2 tracking events — most recent line uses a status-bright color.
     const items = order.tracking?.items;
     if (items?.length) {
       const statusEl = document.createElement('div');
       statusEl.style.cssText = 'margin-top:6px;';
-      items.slice(-2).forEach(item => {
+      const slice = items.slice(-2);
+      slice.forEach((item, i) => {
+        const isLast = i === slice.length - 1;
+        const color = isLast ? trackingStatusColor(item.status) : '#64748b';
         const d = document.createElement('div');
-        d.style.cssText = 'color:#64748b;font-size:11px;margin-top:2px;';
+        d.style.cssText = `color:${color};font-size:var(--sb-fs-11);margin-top:2px;${isLast ? 'font-weight:600;' : ''}`;
         const date = new Date(item.date).toLocaleDateString('en-US', { month:'short', day:'numeric' });
         d.textContent = `${date} · ${item.description}`;
         statusEl.appendChild(d);
@@ -1476,7 +1620,7 @@
       replBtn.textContent = '\uD83D\uDD04 Replace';
       replBtn.disabled = isReplacementOrder;
       replBtn.title = isReplacementOrder ? 'Cannot replace a replacement order' : '';
-      replBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${isReplacementOrder ? 'rgba(99,102,241,0.3)' : '#6366f1'};background:transparent;color:${isReplacementOrder ? 'rgba(165,180,252,0.4)' : '#a5b4fc'};font-weight:600;font-size:11px;cursor:${isReplacementOrder ? 'not-allowed' : 'pointer'};`;
+      replBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${isReplacementOrder ? 'rgba(99,102,241,0.3)' : '#6366f1'};background:transparent;color:${isReplacementOrder ? 'rgba(165,180,252,0.4)' : '#a5b4fc'};font-weight:600;font-size:var(--sb-fs-11);cursor:${isReplacementOrder ? 'not-allowed' : 'pointer'};`;
       if (!isReplacementOrder) {
         replBtn.onmouseenter = () => replBtn.style.background = 'rgba(99,102,241,0.15)';
         replBtn.onmouseleave = () => replBtn.style.background = 'transparent';
@@ -1490,7 +1634,7 @@
       cancelOrderBtn.textContent = '\u274C Cancel Order';
       cancelOrderBtn.disabled = !cancellable;
       cancelOrderBtn.title = cancellable ? '' : `Cannot cancel — order is ${ws}`;
-      cancelOrderBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${cancellable ? '#dc2626' : 'rgba(220,38,38,0.3)'};background:transparent;color:${cancellable ? '#fca5a5' : 'rgba(252,165,165,0.4)'};font-weight:600;font-size:11px;cursor:${cancellable ? 'pointer' : 'not-allowed'};`;
+      cancelOrderBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${cancellable ? '#dc2626' : 'rgba(220,38,38,0.3)'};background:transparent;color:${cancellable ? '#fca5a5' : 'rgba(252,165,165,0.4)'};font-weight:600;font-size:var(--sb-fs-11);cursor:${cancellable ? 'pointer' : 'not-allowed'};`;
       if (cancellable) {
         cancelOrderBtn.onmouseenter = () => cancelOrderBtn.style.background = 'rgba(220,38,38,0.15)';
         cancelOrderBtn.onmouseleave = () => cancelOrderBtn.style.background = 'transparent';
@@ -1504,7 +1648,7 @@
       if (canHold) {
         const holdBtn = document.createElement('button');
         holdBtn.textContent = isOnHold ? '▶ Unhold' : '⏸ Hold';
-        holdBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${isOnHold ? '#6ee7b7' : '#f59e0b'};background:transparent;color:${isOnHold ? '#6ee7b7' : '#f59e0b'};font-weight:600;font-size:11px;cursor:pointer;`;
+        holdBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${isOnHold ? '#6ee7b7' : '#f59e0b'};background:transparent;color:${isOnHold ? '#6ee7b7' : '#f59e0b'};font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;`;
         holdBtn.onmouseenter = () => holdBtn.style.background = isOnHold ? 'rgba(110,231,183,0.15)' : 'rgba(245,158,11,0.15)';
         holdBtn.onmouseleave = () => holdBtn.style.background = 'transparent';
         holdBtn.onclick = () => {
@@ -1687,21 +1831,21 @@
     input.placeholder = 'Name, email, address…';
     input.style.cssText = `
       flex:1;padding:7px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);
-      background:#2a2a3e;color:#e2e8f0;font-size:13px;outline:none;
+      background:#2a2a3e;color:#e2e8f0;font-size:var(--sb-fs-13);outline:none;
     `;
 
     const searchBtn = document.createElement('button');
     searchBtn.textContent = 'Search';
     searchBtn.style.cssText = `
       padding:7px 14px;border-radius:6px;border:none;background:#4f46e5;
-      color:#fff;font-weight:700;font-size:13px;cursor:pointer;
+      color:#fff;font-weight:700;font-size:var(--sb-fs-13);cursor:pointer;
     `;
 
     const filterBtn = document.createElement('button');
     filterBtn.textContent = 'Filter Active';
     filterBtn.style.cssText = `
       padding:7px 10px;border-radius:6px;border:1px solid rgba(110,231,183,0.3);background:transparent;
-      color:#6ee7b7;font-weight:600;font-size:11px;cursor:pointer;white-space:nowrap;
+      color:#6ee7b7;font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;white-space:nowrap;
     `;
     let filterActive = false;
     filterBtn.onclick = () => {
@@ -1726,7 +1870,7 @@
       if (!target) container.innerHTML = '';
       if (headerText) {
         const hdr = document.createElement('div');
-        hdr.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:12px;';
+        hdr.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:var(--sb-fs-12);';
         hdr.textContent = headerText;
         container.appendChild(hdr);
       }
@@ -1750,15 +1894,15 @@
         if (isDrift) card.style.opacity = '0.5';
         card.innerHTML = `
           <div style="display:flex;justify-content:space-between;align-items:baseline;">
-            <div style="font-weight:700;">${user.firstName||''} ${user.lastName||''} ${isDrift ? '<span style="font-size:10px;color:#f59e0b;font-weight:600;background:rgba(245,158,11,0.15);padding:1px 5px;border-radius:3px;margin-left:4px;">' + user.origin + '</span>' : ''}</div>
-            <div style="font-size:11px;font-weight:600;color:${subColor};">${subLabel}</div>
+            <div style="font-weight:700;">${user.firstName||''} ${user.lastName||''} ${isDrift ? '<span style="font-size:var(--sb-fs-10);color:#f59e0b;font-weight:600;background:rgba(245,158,11,0.15);padding:1px 5px;border-radius:3px;margin-left:4px;">' + user.origin + '</span>' : ''}</div>
+            <div style="font-size:var(--sb-fs-11);font-weight:600;color:${subColor};">${subLabel}</div>
           </div>
           <div style="color:#94a3b8;margin-top:2px;">${user.email}</div>
-          <div style="color:#64748b;font-size:11px;margin-top:2px;">ID: ${user.id}</div>
-          ${addr ? `<div style="color:#64748b;font-size:11px;margin-top:2px;">${addr}</div>` : ''}
+          <div style="color:#64748b;font-size:var(--sb-fs-11);margin-top:2px;">ID: ${user.id}</div>
+          ${addr ? `<div style="color:#64748b;font-size:var(--sb-fs-11);margin-top:2px;">${addr}</div>` : ''}
           <div style="margin-top:8px;display:flex;gap:6px;">
-            <button class="sb-apply" style="padding:4px 12px;border-radius:5px;border:none;background:#4f46e5;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">Apply to Kustomer</button>
-            <a class="sb-profile" href="https://crm.scentbird.com/user/${user.id}/profile/subscription" target="_blank" style="padding:4px 12px;border-radius:5px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#e2e8f0;font-size:12px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;">Open Profile</a>
+            <button class="sb-apply" style="padding:4px 12px;border-radius:5px;border:none;background:#4f46e5;color:#fff;font-size:var(--sb-fs-12);font-weight:600;cursor:pointer;">Apply to Kustomer</button>
+            <a class="sb-profile" href="https://crm.scentbird.com/user/${user.id}/profile/subscription" target="_blank" style="padding:4px 12px;border-radius:5px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#e2e8f0;font-size:var(--sb-fs-12);cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;">Open Profile</a>
           </div>
         `;
         card.onmouseenter = () => card.style.borderColor = 'rgba(79,70,229,0.5)';
@@ -1784,7 +1928,7 @@
         }
 
         const orderEl = document.createElement('div');
-        orderEl.style.cssText = 'margin-top:8px;font-size:11px;color:#64748b;';
+        orderEl.style.cssText = 'margin-top:8px;font-size:var(--sb-fs-11);color:#64748b;';
         card.appendChild(orderEl);
 
         if (!isDrift) {
@@ -1816,7 +1960,7 @@
     findOtherBtn.textContent = '🔎 Find Other Accounts';
     findOtherBtn.style.cssText = `
       width:100%;padding:7px;border-radius:6px;border:1px solid rgba(148,163,184,0.25);
-      background:transparent;color:#94a3b8;font-weight:600;font-size:12px;
+      background:transparent;color:#94a3b8;font-weight:600;font-size:var(--sb-fs-12);
       cursor:pointer;margin-bottom:10px;
     `;
     findOtherBtn.onmouseenter = () => findOtherBtn.style.background = 'rgba(148,163,184,0.08)';
@@ -1895,7 +2039,7 @@
       results.innerHTML = '';
       const total = seen.size;
       const summary = document.createElement('div');
-      summary.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:12px;';
+      summary.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:var(--sb-fs-12);';
       summary.textContent = `Found ${total} other account(s)`;
       results.appendChild(summary);
 
@@ -1907,7 +2051,7 @@
       sections.forEach(({ tier, label }) => {
         if (!byTier[tier].length) return;
         const sectionHdr = document.createElement('div');
-        sectionHdr.style.cssText = 'font-weight:700;font-size:12px;color:#cbd5e1;margin:12px 0 6px;';
+        sectionHdr.style.cssText = 'font-weight:700;font-size:var(--sb-fs-12);color:#cbd5e1;margin:12px 0 6px;';
         sectionHdr.textContent = `${label} (${byTier[tier].length})`;
         results.appendChild(sectionHdr);
         renderUsers(byTier[tier], null, results);
@@ -1930,9 +2074,11 @@
     loadCustomer(btn, (result) => {
       if (!result) return;
       const { user } = result;
-      loadCustomerOrders(user.id, (orders) => {
+      loadCustomerOrders(user.id, (rawOrders) => {
+        // Hide upgraded orders — they are superseded shells that just clutter the list.
+        const orders = (rawOrders || []).filter(o => (o.status || '').toUpperCase() !== 'UPGRADED');
         const panel = createPanel({ id: 'sb-order-panel', title: '📦 Last Orders', width: 380 });
-        panel.appendChild(renderUserRow(user));
+        // Identity + shipping address now live in the user info bar; no duplicate header here.
 
         if (!orders?.length) {
           const empty = document.createElement('div');
@@ -1984,7 +2130,7 @@
             const nest = document.createElement('div');
             nest.style.cssText = 'margin-left:12px;margin-top:6px;padding-left:8px;border-left:1px solid rgba(124,58,237,0.3);';
             const replLabel = document.createElement('div');
-            replLabel.style.cssText = 'font-size:10px;color:#7c3aed;font-weight:600;letter-spacing:0.05em;margin-bottom:4px;';
+            replLabel.style.cssText = 'font-size:var(--sb-fs-10);color:#7c3aed;font-weight:600;letter-spacing:0.05em;margin-bottom:4px;';
             replLabel.textContent = 'REPLACEMENT';
             nest.appendChild(replLabel);
             nest.appendChild(renderOrderBlock(r, false, orderCtx, true));
@@ -2000,7 +2146,7 @@
         const csBtn = document.createElement('button');
         csBtn.textContent = '📦 Custom Shipment';
         csBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #4f46e5;background:transparent;
-          color:#a5b4fc;font-weight:600;font-size:12px;cursor:pointer;box-sizing:border-box;`;
+          color:#a5b4fc;font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
         csBtn.onmouseenter = () => csBtn.style.background = 'rgba(79,70,229,0.1)';
         csBtn.onmouseleave = () => csBtn.style.background = 'transparent';
         csBtn.onclick = () => showCustomShipmentForm(user);
@@ -2034,7 +2180,7 @@
         // Failed charges
         if (failed?.length) {
           const failHdr = document.createElement('div');
-          failHdr.style.cssText = 'color:#fca5a5;font-size:11px;font-weight:600;margin-bottom:4px;';
+          failHdr.style.cssText = 'color:#fca5a5;font-size:var(--sb-fs-11);font-weight:600;margin-bottom:4px;';
           failHdr.textContent = `\u274C ${failed.length} failed charge attempt${failed.length > 1 ? 's' : ''}`;
           panel.appendChild(failHdr);
 
@@ -2044,7 +2190,7 @@
             const c = entry.charge;
             const desc = c?.cashbirdDetails?.invoice?.lineItems?.[0]?.description || c?.category || '\u2014';
             const row = document.createElement('div');
-            row.style.cssText = 'color:#94a3b8;font-size:11px;margin-bottom:3px;display:flex;gap:8px;align-items:baseline;';
+            row.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-11);margin-bottom:3px;display:flex;gap:8px;align-items:baseline;';
             row.innerHTML = `
               <span style="color:#64748b;white-space:nowrap;">${chargeDateLabel(c?.paymentDate || entry.date)}</span>
               <span style="color:#fca5a5;white-space:nowrap;">${fmtMoney((c?.totalPrice || 0) * 100)}</span>
@@ -2059,7 +2205,7 @@
         const allSuccess = result.all || (result.success ? [result.success] : []);
         if (!allSuccess.length) {
           const noEl = document.createElement('div');
-          noEl.style.cssText = 'color:#94a3b8;font-size:12px;';
+          noEl.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-12);';
           noEl.textContent = 'No successful charges found.';
           panel.appendChild(noEl);
           return;
@@ -2105,17 +2251,17 @@
           const refundAmt = lineItemsForRefundCalc.reduce((sum, li) => sum + (li.refundedAmount || 0), 0);
           const totalRefunded = refundAmt >= Math.round(c.totalPrice * 100);
           const refundTag = refundAmt > 0
-            ? ` <span style="font-size:11px;font-weight:600;color:${totalRefunded ? '#6ee7b7' : '#f59e0b'};">&#8617; ${fmtMoney(refundAmt, currency)} refunded</span>`
+            ? ` <span style="font-size:var(--sb-fs-11);font-weight:600;color:${totalRefunded ? '#6ee7b7' : '#f59e0b'};">&#8617; ${fmtMoney(refundAmt, currency)} refunded</span>`
             : '';
           cHdr.innerHTML = `
-            <span style="font-weight:700;font-size:13px;color:#6ee7b7;">\u2714 ${fmtMoney(c.totalPrice * 100, currency)}</span>${refundTag}
-            <span style="color:#64748b;font-size:11px;">${chargeDateLabel(billingDate)}</span>
+            <span style="font-weight:700;font-size:var(--sb-fs-13);color:#6ee7b7;">\u2714 ${fmtMoney(c.totalPrice * 100, currency)}</span>${refundTag}
+            <span style="color:#64748b;font-size:var(--sb-fs-11);">${chargeDateLabel(billingDate)}</span>
           `;
           panel.appendChild(cHdr);
 
           if (pm) {
             const pmRow = document.createElement('div');
-            pmRow.style.cssText = 'color:#64748b;font-size:11px;margin-bottom:8px;';
+            pmRow.style.cssText = 'color:#64748b;font-size:var(--sb-fs-11);margin-bottom:8px;';
             pmRow.textContent = `${pm.type} \u00b7 ${pm.methodName}`;
             panel.appendChild(pmRow);
           }
@@ -2131,7 +2277,7 @@
               const discPart = item.discount
                 ? `<span style="color:#6ee7b7;margin-right:4px;">-${fmtMoney(item.discount, currency)}</span>` : '';
               const row = document.createElement('div');
-              row.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;font-size:12px;';
+              row.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;font-size:var(--sb-fs-12);';
               row.innerHTML = `
                 <span style="color:#cbd5e1;">${nameStr}</span>
                 <span style="color:#94a3b8;white-space:nowrap;margin-left:8px;">${discPart}${fmtMoney(item.price, currency)} + ${fmtMoney(item.tax, currency)} tax = <strong>${fmtMoney(item.total, currency)}</strong></span>
@@ -2141,7 +2287,7 @@
           } else {
             const cat = c?.category || 'CHARGE';
             const fallback = document.createElement('div');
-            fallback.style.cssText = 'color:#64748b;font-size:11px;font-style:italic;';
+            fallback.style.cssText = 'color:#64748b;font-size:var(--sb-fs-11);font-style:italic;';
             fallback.textContent = cat.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
             lineWrap.appendChild(fallback);
           }
@@ -2156,14 +2302,14 @@
           const mergedText = allExplanations.join('\n');
           const expHdr = document.createElement('div');
           expHdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:4px;margin-bottom:4px;';
-          expHdr.innerHTML = '<span style="font-size:11px;color:#64748b;font-weight:600;letter-spacing:0.05em;">BILL EXPLANATION</span>';
+          expHdr.innerHTML = '<span style="font-size:var(--sb-fs-11);color:#64748b;font-weight:600;letter-spacing:0.05em;">BILL EXPLANATION</span>';
           expHdr.appendChild(makeCopyBtn(mergedText, '\uD83D\uDCCB Copy'));
           panel.appendChild(expHdr);
 
           const expBox = document.createElement('div');
           expBox.style.cssText = `
             background:#0f172a;border-radius:6px;padding:10px 12px;
-            font-size:12px;color:#cbd5e1;white-space:pre-wrap;line-height:1.7;
+            font-size:var(--sb-fs-12);color:#cbd5e1;white-space:pre-wrap;line-height:1.7;
             border:1px solid rgba(255,255,255,0.06);
           `;
           expBox.textContent = mergedText;
@@ -2188,7 +2334,7 @@
       panel.appendChild(renderUserRow(user));
 
       const loadingEl = document.createElement('div');
-      loadingEl.style.cssText = 'color:#94a3b8;font-size:12px;';
+      loadingEl.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-12);';
       loadingEl.textContent = 'Loading queue...';
       panel.appendChild(loadingEl);
 
@@ -2197,7 +2343,7 @@
 
         if (!blocks || !blocks.length) {
           const empty = document.createElement('div');
-          empty.style.cssText = 'color:#94a3b8;font-size:12px;';
+          empty.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-12);';
           empty.textContent = blocks ? 'Queue is empty.' : 'Failed to load queue.';
           panel.appendChild(empty);
           return;
@@ -2208,7 +2354,7 @@
 
         if (!filledBlocks.length) {
           const empty = document.createElement('div');
-          empty.style.cssText = 'color:#94a3b8;font-size:12px;';
+          empty.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-12);';
           empty.textContent = 'No products in queue.';
           panel.appendChild(empty);
           return;
@@ -2250,7 +2396,7 @@
           hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;';
 
           const monthEl = document.createElement('span');
-          monthEl.style.cssText = 'color:#94a3b8;font-size:11px;font-weight:600;';
+          monthEl.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-11);font-weight:600;';
           monthEl.textContent = monthLabel;
           hdr.appendChild(monthEl);
 
@@ -2260,7 +2406,7 @@
             const statusColor = (orderStatus === 'SHIPPED' || orderStatus === 'DELIVERED') ? '#6ee7b7'
               : orderStatus === 'PENDING' ? '#f59e0b' : '#94a3b8';
             const statusEl = document.createElement('span');
-            statusEl.style.cssText = `font-size:10px;font-weight:600;color:${statusColor};`;
+            statusEl.style.cssText = `font-size:var(--sb-fs-10);font-weight:600;color:${statusColor};`;
             statusEl.textContent = orderStatus;
             hdr.appendChild(statusEl);
           }
@@ -2278,15 +2424,19 @@
             row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;';
 
             const nameEl = document.createElement('span');
-            nameEl.style.cssText = 'color:#cbd5e1;font-size:12px;flex:1;margin-right:6px;';
-            nameEl.textContent = prodName;
+            nameEl.style.cssText = 'color:#cbd5e1;font-size:var(--sb-fs-12);flex:1;margin-right:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+            const nameText = document.createElement('span');
+            nameText.textContent = prodName;
+            nameEl.appendChild(nameText);
+            const plaque = makeProductStatusPlaque(prod.tradingItem?.status);
+            if (plaque) nameEl.appendChild(plaque);
             row.appendChild(nameEl);
 
             // Upcharge indicator
             const upcharge = prod.upchargePrice || pi.upchargePrice;
             if (upcharge && upcharge > 0) {
               const upEl = document.createElement('span');
-              upEl.style.cssText = 'color:#f59e0b;font-size:10px;font-weight:600;white-space:nowrap;margin-right:4px;';
+              upEl.style.cssText = 'color:#f59e0b;font-size:var(--sb-fs-10);font-weight:600;white-space:nowrap;margin-right:4px;';
               upEl.textContent = '+$' + (upcharge / 100).toFixed(0);
               row.appendChild(upEl);
             }
@@ -2299,7 +2449,7 @@
               const delBtn = document.createElement('button');
               delBtn.textContent = '✕';
               delBtn.title = 'Remove from queue';
-              delBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:#64748b;font-size:13px;padding:0 3px;flex-shrink:0;';
+              delBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:#64748b;font-size:var(--sb-fs-13);padding:0 3px;flex-shrink:0;';
               delBtn.onmouseenter = () => delBtn.style.color = '#fca5a5';
               delBtn.onmouseleave = () => delBtn.style.color = '#64748b';
               delBtn.onclick = () => {
@@ -2351,7 +2501,7 @@
           copyAllRow.style.cssText = 'display:flex;justify-content:flex-end;margin-top:8px;';
           const copyAllBtn = document.createElement('button');
           copyAllBtn.textContent = '📋 Copy All';
-          copyAllBtn.style.cssText = 'background:none;border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#818cf8;font-size:11px;padding:4px 10px;cursor:pointer;';
+          copyAllBtn.style.cssText = 'background:none;border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#818cf8;font-size:var(--sb-fs-11);padding:4px 10px;cursor:pointer;';
           copyAllBtn.onmouseenter = () => copyAllBtn.style.background = 'rgba(99,102,241,0.1)';
           copyAllBtn.onmouseleave = () => copyAllBtn.style.background = 'none';
           copyAllBtn.onclick = () => {
@@ -2379,10 +2529,14 @@
     const existingForm = document.getElementById('sb-cs-form');
     if (existingForm) { existingForm.remove(); document.getElementById('sb-product-search-panel')?.remove(); return; }
 
-    const { overlay, box: form } = createModal({
+    const form = createPanel({
       id: 'sb-cs-form',
       title: '📦 Custom Shipment',
       width: 400,
+      maxHeight: 720,
+      centered: true,
+      draggable: true,
+      onClose: () => document.getElementById('sb-product-search-panel')?.remove(),
     });
 
     form.appendChild(renderUserRow(user));
@@ -2424,7 +2578,7 @@
     const itemChecks = [];
 
     const noItems = document.createElement('div');
-    noItems.style.cssText = 'color:#64748b;font-size:11px;font-style:italic;';
+    noItems.style.cssText = 'color:#64748b;font-size:var(--sb-fs-11);font-style:italic;';
     noItems.textContent = 'No products added. Use Search Product below.';
     itemsWrap.appendChild(noItems);
     form.appendChild(itemsWrap);
@@ -2434,7 +2588,7 @@
     searchRow.style.cssText = 'margin-top:8px;';
     const searchProductBtn = document.createElement('button');
     searchProductBtn.textContent = '🔍 Search Product';
-    searchProductBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid #818cf8;background:transparent;color:#818cf8;font-weight:600;font-size:11px;cursor:pointer;';
+    searchProductBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid #818cf8;background:transparent;color:#818cf8;font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;';
     searchProductBtn.onmouseenter = () => searchProductBtn.style.background = 'rgba(129,140,248,0.15)';
     searchProductBtn.onmouseleave = () => searchProductBtn.style.background = 'transparent';
     searchProductBtn.onclick = () => {
@@ -2449,12 +2603,12 @@
     const commentInput = document.createElement('textarea');
     commentInput.placeholder = 'Add a note...';
     commentInput.rows = 2;
-    commentInput.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:12px;box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;';
+    commentInput.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-12);box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;';
     form.appendChild(commentInput);
 
     // Credit info (loaded async)
     const creditInfo = document.createElement('div');
-    creditInfo.style.cssText = 'margin-top:12px;font-size:11px;color:#94a3b8;';
+    creditInfo.style.cssText = 'margin-top:12px;font-size:var(--sb-fs-11);color:#94a3b8;';
     creditInfo.textContent = 'Loading credit info...';
     form.appendChild(creditInfo);
 
@@ -2498,7 +2652,7 @@
     confirmBtn.style.cssText = `
       margin-top:14px;width:100%;padding:9px;border-radius:6px;
       border:none;background:#4f46e5;color:#fff;font-weight:700;
-      font-size:13px;cursor:pointer;box-sizing:border-box;
+      font-size:var(--sb-fs-13);cursor:pointer;box-sizing:border-box;
     `;
     confirmBtn.onmouseenter = () => confirmBtn.style.background = '#4338ca';
     confirmBtn.onmouseleave = () => confirmBtn.style.background = '#4f46e5';
@@ -2538,7 +2692,7 @@
       const reasonLabel = CS_REASONS.find(r => r.value === reasonSel.value)?.label || reasonSel.value;
 
       const detailsEl = document.createElement('div');
-      detailsEl.style.cssText = 'background:#0f172a;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:12px;line-height:1.8;color:#cbd5e1;';
+      detailsEl.style.cssText = 'background:#0f172a;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);line-height:1.8;color:#cbd5e1;';
 
       let detailsHtml = `
         <div><span style="color:#64748b;">Month</span>&nbsp;&nbsp;&nbsp;&nbsp; ${monthNames[csMonth - 1]} ${csYear}</div>
@@ -2553,7 +2707,7 @@
 
       // Product list
       const prodList = document.createElement('div');
-      prodList.style.cssText = 'margin-bottom:12px;font-size:11px;color:#94a3b8;';
+      prodList.style.cssText = 'margin-bottom:12px;font-size:var(--sb-fs-11);color:#94a3b8;';
       itemChecks.filter(({ chk }) => chk.checked).forEach(({ item }) => {
         const pi = item.product?.productInfo || item.productInfo;
         const row = document.createElement('div');
@@ -2634,7 +2788,7 @@
                       confirmBtn.style.color = '#6ee7b7';
                       setTimeout(() => {
                         confOverlay.remove();
-                        overlay.remove();
+                        form.remove();
                         document.getElementById('sb-product-search-panel')?.remove();
                       }, 1800);
                     }
@@ -2718,12 +2872,12 @@
       emailInput.value = user.email || '';
       emailInput.style.cssText = `
         flex:1;padding:7px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);
-        background:#0f172a;color:#e2e8f0;font-size:12px;outline:none;box-sizing:border-box;
+        background:#0f172a;color:#e2e8f0;font-size:var(--sb-fs-12);outline:none;box-sizing:border-box;
       `;
 
       const updateBtn = document.createElement('button');
       updateBtn.textContent = 'Update';
-      updateBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:12px;cursor:pointer;';
+      updateBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;';
       updateBtn.onmouseenter = () => updateBtn.style.background = '#4338ca';
       updateBtn.onmouseleave = () => updateBtn.style.background = '#4f46e5';
 
@@ -2789,7 +2943,7 @@
 
       const genderBtn = document.createElement('button');
       genderBtn.textContent = 'Update';
-      genderBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:12px;cursor:pointer;';
+      genderBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;';
       genderBtn.onmouseenter = () => genderBtn.style.background = '#4338ca';
       genderBtn.onmouseleave = () => genderBtn.style.background = '#4f46e5';
 
@@ -2860,7 +3014,7 @@
       const shipping = user.userAddress?.shipping;
       if (shipping) {
         const addrDisplay = document.createElement('div');
-        addrDisplay.style.cssText = 'font-size:11px;color:#94a3b8;margin-bottom:8px;line-height:1.5;';
+        addrDisplay.style.cssText = 'font-size:var(--sb-fs-11);color:#94a3b8;margin-bottom:8px;line-height:1.5;';
         addrDisplay.textContent = [shipping.street1, shipping.street2, shipping.city, shipping.region, shipping.postcode].filter(Boolean).join(', ');
         panel.appendChild(addrDisplay);
       }
@@ -2877,7 +3031,7 @@
       const updateAddrBtn = document.createElement('button');
       updateAddrBtn.textContent = '📍 Update Address';
       updateAddrBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #4f46e5;background:transparent;
-        color:#a5b4fc;font-weight:600;font-size:12px;cursor:pointer;box-sizing:border-box;`;
+        color:#a5b4fc;font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
       updateAddrBtn.onmouseenter = () => updateAddrBtn.style.background = 'rgba(79,70,229,0.1)';
       updateAddrBtn.onmouseleave = () => updateAddrBtn.style.background = 'transparent';
       updateAddrBtn.onclick = () => {
@@ -2907,7 +3061,7 @@
       addrInput.placeholder = 'Start typing new address...';
       addrInput.style.cssText = `
         width:100%;padding:7px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);
-        background:#0f172a;color:#e2e8f0;font-size:12px;outline:none;box-sizing:border-box;
+        background:#0f172a;color:#e2e8f0;font-size:var(--sb-fs-12);outline:none;box-sizing:border-box;
       `;
       addrEditWrap.appendChild(addrInput);
 
@@ -2916,7 +3070,7 @@
       addrEditWrap.appendChild(addrResults);
 
       const selectedAddr = document.createElement('div');
-      selectedAddr.style.cssText = 'display:none;background:#0f172a;border-radius:6px;padding:8px 10px;margin-top:8px;font-size:11px;color:#cbd5e1;line-height:1.6;';
+      selectedAddr.style.cssText = 'display:none;background:#0f172a;border-radius:6px;padding:8px 10px;margin-top:8px;font-size:var(--sb-fs-11);color:#cbd5e1;line-height:1.6;';
       addrEditWrap.appendChild(selectedAddr);
 
       const addrStatus = makeStatusEl();
@@ -2924,7 +3078,7 @@
 
       const addrSaveBtn = document.createElement('button');
       addrSaveBtn.textContent = 'Save Address';
-      addrSaveBtn.style.cssText = 'display:none;width:100%;padding:9px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:12px;cursor:pointer;box-sizing:border-box;margin-top:8px;';
+      addrSaveBtn.style.cssText = 'display:none;width:100%;padding:9px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;margin-top:8px;';
       addrSaveBtn.onmouseenter = () => addrSaveBtn.style.background = '#4338ca';
       addrSaveBtn.onmouseleave = () => addrSaveBtn.style.background = '#4f46e5';
       addrEditWrap.appendChild(addrSaveBtn);
@@ -2953,7 +3107,7 @@
 
               data.addressAutocomplete.data.forEach(suggestion => {
                 const row = document.createElement('div');
-                row.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:11px;color:#cbd5e1;border-bottom:1px solid rgba(255,255,255,0.05);';
+                row.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:var(--sb-fs-11);color:#cbd5e1;border-bottom:1px solid rgba(255,255,255,0.05);';
                 row.onmouseenter = () => row.style.background = 'rgba(99,102,241,0.15)';
                 row.onmouseleave = () => row.style.background = '';
 
@@ -2964,7 +3118,7 @@
 
                 if (suggestion.secondaryText) {
                   const sec = document.createElement('div');
-                  sec.style.cssText = 'color:#64748b;font-size:10px;';
+                  sec.style.cssText = 'color:#64748b;font-size:var(--sb-fs-10);';
                   sec.textContent = suggestion.secondaryText;
                   row.appendChild(sec);
                 }
@@ -2976,7 +3130,7 @@
                     return;
                   }
 
-                  addrResults.innerHTML = '<div style="color:#94a3b8;font-size:11px;padding:6px 10px;">Loading details...</div>';
+                  addrResults.innerHTML = '<div style="color:#94a3b8;font-size:var(--sb-fs-11);padding:6px 10px;">Loading details...</div>';
                   customerApiCall('AddressDetails',
                     `query AddressDetails($input: AddressAutocompleteDetailsInput!) {
                       addressAutocompleteDetails(input: $input) {
@@ -3155,7 +3309,7 @@
         // Customer info
         const name = [user.firstName, user.lastName].filter(Boolean).join(' ') || '\u2014';
         const infoEl = document.createElement('div');
-        infoEl.style.cssText = 'font-size:12px;color:#94a3b8;margin-bottom:10px;line-height:1.6;';
+        infoEl.style.cssText = 'font-size:var(--sb-fs-12);color:#94a3b8;margin-bottom:10px;line-height:1.6;';
         infoEl.innerHTML = `<span style="color:#e2e8f0;font-weight:600;">${name}</span> &middot; ${user.email}`;
         panel.appendChild(infoEl);
 
@@ -3175,9 +3329,9 @@
 
           const orderInfo = document.createElement('div');
           orderInfo.innerHTML = `<div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;">
-            <span style="color:#94a3b8;font-size:11px;">${monthLbl}</span>
-            <span style="color:${statusColor};font-size:11px;font-weight:600;">${ws}</span>
-          </div>` + lines.map(l => `<div style="color:#cbd5e1;font-size:11px;">${l}</div>`).join('');
+            <span style="color:#94a3b8;font-size:var(--sb-fs-11);">${monthLbl}</span>
+            <span style="color:${statusColor};font-size:var(--sb-fs-11);font-weight:600;">${ws}</span>
+          </div>` + lines.map(l => `<div style="color:#cbd5e1;font-size:var(--sb-fs-11);">${l}</div>`).join('');
 
           // Tracking
           const trackNo  = lastOrder.tracking?.trackingNumber || lastOrder.shipment?.trackingNumber || '';
@@ -3190,12 +3344,12 @@
               const a = document.createElement('a');
               a.href = trackUrl; a.target = '_blank';
               a.textContent = trackNo;
-              a.style.cssText = 'color:#818cf8;font-size:11px;text-decoration:none;';
+              a.style.cssText = 'color:#818cf8;font-size:var(--sb-fs-11);text-decoration:none;';
               tRow.appendChild(a);
               const copyBtn = document.createElement('button');
               copyBtn.textContent = '\uD83D\uDD17';
               copyBtn.title = 'Copy tracking link';
-              copyBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:#818cf8;font-size:12px;padding:0 2px;';
+              copyBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:#818cf8;font-size:var(--sb-fs-12);padding:0 2px;';
               copyBtn.onclick = () => {
                 navigator.clipboard.write([
                   new ClipboardItem({
@@ -3208,7 +3362,7 @@
               tRow.appendChild(copyBtn);
             } else {
               const sp = document.createElement('span');
-              sp.style.cssText = 'color:#818cf8;font-size:11px;';
+              sp.style.cssText = 'color:#818cf8;font-size:var(--sb-fs-11);';
               sp.textContent = trackNo;
               tRow.appendChild(sp);
             }
@@ -3219,7 +3373,7 @@
             evEl.style.cssText = 'margin-top:3px;';
             trackItems.slice(-2).forEach(item => {
               const d = document.createElement('div');
-              d.style.cssText = 'color:#64748b;font-size:11px;margin-top:1px;';
+              d.style.cssText = 'color:#64748b;font-size:var(--sb-fs-11);margin-top:1px;';
               const dt = new Date(item.date).toLocaleDateString('en-US', { month:'short', day:'numeric' });
               d.textContent = dt + ' · ' + item.description;
               evEl.appendChild(d);
@@ -3236,7 +3390,7 @@
           orderRefBtn.disabled = !refundable;
           orderRefBtn.title = refundable ? 'Open refund charges' : 'Order cannot be refunded at this stage (' + ws + ')';
           orderRefBtn.style.cssText = `
-            margin-left:8px;padding:3px 8px;border-radius:5px;border:none;font-size:11px;font-weight:600;
+            margin-left:8px;padding:3px 8px;border-radius:5px;border:none;font-size:var(--sb-fs-11);font-weight:600;
             white-space:nowrap;flex-shrink:0;
             cursor:${refundable ? 'pointer' : 'not-allowed'};
             background:${refundable ? '#7c3aed' : 'rgba(124,58,237,0.2)'};
@@ -3257,7 +3411,7 @@
 
         if (isAlreadyCancelled) {
           const subStatusEl = document.createElement('div');
-          subStatusEl.style.cssText = 'font-size:11px;color:#f59e0b;margin-bottom:10px;';
+          subStatusEl.style.cssText = 'font-size:var(--sb-fs-11);color:#f59e0b;margin-bottom:10px;';
           subStatusEl.textContent = isAwaitingCancel
             ? '⚠ Subscription is already scheduled for cancellation'
             : '⚠ Subscription status: ' + subStatus;
@@ -3267,7 +3421,7 @@
         const confirmBtn = document.createElement('button');
         confirmBtn.textContent = 'Cancel Subscription';
         confirmBtn.disabled = isAlreadyCancelled;
-        confirmBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:none;font-weight:700;font-size:13px;box-sizing:border-box;
+        confirmBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:none;font-weight:700;font-size:var(--sb-fs-13);box-sizing:border-box;
           background:${isAlreadyCancelled ? '#374151' : '#dc2626'};
           color:${isAlreadyCancelled ? '#6b7280' : '#fff'};
           cursor:${isAlreadyCancelled ? 'not-allowed' : 'pointer'};`;
@@ -3332,14 +3486,14 @@
         const delPmBtn = document.createElement('button');
         delPmBtn.textContent = '🗑 Delete Payment Methods';
         delPmBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #dc2626;background:transparent;
-          color:#fca5a5;font-weight:600;font-size:12px;cursor:pointer;box-sizing:border-box;`;
+          color:#fca5a5;font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
         delPmBtn.onmouseenter = () => delPmBtn.style.background = 'rgba(220,38,38,0.1)';
         delPmBtn.onmouseleave = () => delPmBtn.style.background = 'transparent';
         delPmBtn.onclick = () => {
           const { overlay, box } = createModal({ id: 'sb-del-pm-overlay', title: '🗑 Delete All Payment Methods', width: 320 });
 
           const warnEl = document.createElement('div');
-          warnEl.style.cssText = 'background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.3);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#fca5a5;line-height:1.6;';
+          warnEl.style.cssText = 'background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.3);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:#fca5a5;line-height:1.6;';
           warnEl.innerHTML = `This will permanently remove <strong>all stored payment methods</strong> for:<br><br>
             <span style="color:#e2e8f0;font-weight:600;">${name}</span><br>
             <span style="color:#94a3b8;">${user.email}</span><br><br>
@@ -3389,14 +3543,14 @@
         const delAccBtn = document.createElement('button');
         delAccBtn.textContent = '⛔ Delete Account';
         delAccBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #991b1b;background:transparent;
-          color:#fca5a5;font-weight:600;font-size:12px;cursor:pointer;box-sizing:border-box;margin-top:6px;`;
+          color:#fca5a5;font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;margin-top:6px;`;
         delAccBtn.onmouseenter = () => delAccBtn.style.background = 'rgba(153,27,27,0.15)';
         delAccBtn.onmouseleave = () => delAccBtn.style.background = 'transparent';
         delAccBtn.onclick = () => {
           const { overlay, box } = createModal({ id: 'sb-del-acc-overlay', title: '⛔ Delete Account', width: 320 });
 
           const warnEl = document.createElement('div');
-          warnEl.style.cssText = 'background:rgba(153,27,27,0.15);border:1px solid rgba(153,27,27,0.4);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#fca5a5;line-height:1.6;';
+          warnEl.style.cssText = 'background:rgba(153,27,27,0.15);border:1px solid rgba(153,27,27,0.4);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:#fca5a5;line-height:1.6;';
           warnEl.innerHTML = `This will:<br>
             <span style="color:#e2e8f0;">1.</span> Remove all payment methods<br>
             <span style="color:#e2e8f0;">2.</span> Disable the account email<br><br>
@@ -3462,7 +3616,7 @@
         const fraudBtn = document.createElement('button');
         fraudBtn.textContent = '🚫 Blocklist (Fraud)';
         fraudBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #7c3aed;background:transparent;
-          color:#c4b5fd;font-weight:600;font-size:12px;cursor:pointer;box-sizing:border-box;margin-top:6px;`;
+          color:#c4b5fd;font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;margin-top:6px;`;
         fraudBtn.onmouseenter = () => fraudBtn.style.background = 'rgba(124,58,237,0.1)';
         fraudBtn.onmouseleave = () => fraudBtn.style.background = 'transparent';
 
@@ -3486,7 +3640,7 @@
           });
 
           const intro = document.createElement('div');
-          intro.style.cssText = 'font-size:12px;color:#94a3b8;margin-bottom:10px;';
+          intro.style.cssText = 'font-size:var(--sb-fs-12);color:#94a3b8;margin-bottom:10px;';
           intro.textContent = isAdding
             ? `Add ${user.email} to the fraud blocklist?`
             : `Remove ${user.email} from the fraud blocklist?`;
@@ -3496,7 +3650,7 @@
           const ta = document.createElement('textarea');
           ta.rows = 3;
           ta.placeholder = isAdding ? 'Reason for blocklisting…' : 'Reason for unblocklisting…';
-          ta.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:12px;box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;margin-bottom:10px;';
+          ta.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-12);box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;margin-bottom:10px;';
           box.appendChild(ta);
 
           const dlgStatus = makeStatusEl();
@@ -3567,7 +3721,7 @@
     const panel = createPanel({ id: 'sb-refund-charges-panel', title: '💳 Charges — Refund', width: 360, right: 350 });
 
     const loadingEl = document.createElement('div');
-    loadingEl.style.cssText = 'color:#94a3b8;font-size:12px;';
+    loadingEl.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-12);';
     loadingEl.textContent = 'Loading charges...';
     panel.appendChild(loadingEl);
 
@@ -3576,7 +3730,7 @@
 
       if (!result || !result.all?.length) {
         const empty = document.createElement('div');
-        empty.style.cssText = 'color:#94a3b8;font-size:12px;';
+        empty.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-12);';
         empty.textContent = result ? 'No charges found for this month.' : 'Failed to load charges.';
         panel.appendChild(empty);
         return;
@@ -3605,10 +3759,10 @@
         const chgHdr = document.createElement('div');
         chgHdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;';
         const chgLeft = document.createElement('div');
-        chgLeft.style.cssText = 'font-size:12px;color:#94a3b8;';
+        chgLeft.style.cssText = 'font-size:var(--sb-fs-12);color:#94a3b8;';
         chgLeft.textContent = chargeDateLabel(charge.paymentDate);
         const chgTotal = document.createElement('div');
-        chgTotal.style.cssText = 'display:flex;align-items:center;gap:2px;font-weight:700;font-size:13px;color:#e2e8f0;';
+        chgTotal.style.cssText = 'display:flex;align-items:center;gap:2px;font-weight:700;font-size:var(--sb-fs-13);color:#e2e8f0;';
         chgTotal.textContent = fmtMoney(totalCents, currency);
         chgTotal.appendChild(makeCopyBtn(fmtMoney(totalCents, currency), '📋'));
         chgHdr.appendChild(chgLeft);
@@ -3619,7 +3773,7 @@
         const pmMethod = charge?.cashbirdDetails?.paymentMethod?.methodName || '';
         if (pmMethod) {
           const pmEl = document.createElement('div');
-          pmEl.style.cssText = 'font-size:11px;color:#64748b;margin-bottom:6px;';
+          pmEl.style.cssText = 'font-size:var(--sb-fs-11);color:#64748b;margin-bottom:6px;';
           pmEl.textContent = pmMethod;
           block.appendChild(pmEl);
         }
@@ -3631,7 +3785,7 @@
           breakdown.style.cssText = 'margin-bottom:8px;';
           lineItems.forEach(li => {
             const liEl = document.createElement('div');
-            liEl.style.cssText = 'display:flex;justify-content:space-between;font-size:11px;color:#94a3b8;padding:2px 0;';
+            liEl.style.cssText = 'display:flex;justify-content:space-between;font-size:var(--sb-fs-11);color:#94a3b8;padding:2px 0;';
             const liName = document.createElement('span');
             liName.style.cssText = 'flex:1;margin-right:8px;';
             liName.textContent = li.description || li.productCode || li.type || '—';
@@ -3644,7 +3798,7 @@
             if (li.refundedAmount !== null && li.refundedAmount !== undefined) {
               const liRefTag = document.createElement('span');
               const fullyRefunded = li.refundedAmount >= (li.total || li.price || 0);
-              liRefTag.style.cssText = 'font-size:10px;font-weight:600;color:' + (fullyRefunded ? '#6ee7b7' : '#f59e0b') + ';';
+              liRefTag.style.cssText = 'font-size:var(--sb-fs-10);font-weight:600;color:' + (fullyRefunded ? '#6ee7b7' : '#f59e0b') + ';';
               liRefTag.textContent = fullyRefunded ? '\u21A9 refunded' : '\u21A9 partial';
               liRight.appendChild(liRefTag);
             }
@@ -3654,7 +3808,7 @@
           });
           if (invoice.tax) {
             const taxEl = document.createElement('div');
-            taxEl.style.cssText = 'display:flex;justify-content:space-between;font-size:11px;color:#64748b;padding:2px 0;border-top:1px solid rgba(255,255,255,0.05);margin-top:3px;';
+            taxEl.style.cssText = 'display:flex;justify-content:space-between;font-size:var(--sb-fs-11);color:#64748b;padding:2px 0;border-top:1px solid rgba(255,255,255,0.05);margin-top:3px;';
             taxEl.innerHTML = `<span>Tax</span><span>${fmtMoney(invoice.tax, currency)}</span>`;
             breakdown.appendChild(taxEl);
           }
@@ -3664,7 +3818,7 @@
         // Credit summary
         if (credits.length) {
           const creditEl = document.createElement('div');
-          creditEl.style.cssText = 'font-size:11px;color:#94a3b8;margin-bottom:8px;';
+          creditEl.style.cssText = 'font-size:var(--sb-fs-11);color:#94a3b8;margin-bottom:8px;';
           const perCredit = credits[0]?.total || credits[0]?.amount || 0;
           creditEl.textContent = credits.length === 1
             ? fmtMoney(perCredit, currency) + ' credit'
@@ -3679,7 +3833,7 @@
         // Already refunded warning
         if (alreadyRefunded || hasRefunds) {
           const warnEl = document.createElement('div');
-          warnEl.style.cssText = 'font-size:11px;color:#f59e0b;margin-bottom:8px;';
+          warnEl.style.cssText = 'font-size:var(--sb-fs-11);color:#f59e0b;margin-bottom:8px;';
           warnEl.textContent = alreadyRefunded
             ? '⚠ Partially refunded: ' + fmtMoney(Math.round(charge.refundAmount * 100), currency) + ' already returned'
             : '⚠ Refund records exist for this charge';
@@ -3699,7 +3853,7 @@
         refBtn.title = orderIsNonRefundable ? 'Order is already ' + orderStatus : '';
         refBtn.style.cssText = `
           width:100%;padding:7px;border-radius:6px;border:none;margin-top:4px;
-          font-weight:700;font-size:12px;cursor:${canRefund ? 'pointer' : 'not-allowed'};
+          font-weight:700;font-size:var(--sb-fs-12);cursor:${canRefund ? 'pointer' : 'not-allowed'};
           background:${canRefund ? '#7c3aed' : 'rgba(124,58,237,0.2)'};
           color:${canRefund ? '#fff' : '#64748b'};
           box-sizing:border-box;
@@ -3721,7 +3875,7 @@
       const refundTotalInner = document.createElement('div');
       refundTotalInner.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
       const refundTotalLabel = document.createElement('span');
-      refundTotalLabel.style.cssText = 'font-size:12px;color:#6ee7b7;font-weight:700;';
+      refundTotalLabel.style.cssText = 'font-size:var(--sb-fs-12);color:#6ee7b7;font-weight:700;';
       const refundTotalCopy = makeCopyBtn(() => {
         const cur = result.all?.[0]?.charge?.cashbirdDetails?.invoice?.lineItems?.[0]?.currency || 'USD';
         return fmtMoney(_totalRefundedCents, cur);
@@ -3754,13 +3908,13 @@
 
     lines.forEach(line => {
       const el = document.createElement('div');
-      el.style.cssText = 'font-size:12px;color:#94a3b8;margin-bottom:5px;padding:4px 8px;background:#2a2a3e;border-radius:4px;';
+      el.style.cssText = 'font-size:var(--sb-fs-12);color:#94a3b8;margin-bottom:5px;padding:4px 8px;background:#2a2a3e;border-radius:4px;';
       el.textContent = line;
       box.appendChild(el);
     });
 
     const warn = document.createElement('div');
-    warn.style.cssText = 'font-size:12px;color:#fca5a5;margin-top:10px;margin-bottom:14px;';
+    warn.style.cssText = 'font-size:var(--sb-fs-12);color:#fca5a5;margin-top:10px;margin-bottom:14px;';
     warn.textContent = 'This cannot be undone.';
     box.appendChild(warn);
 
@@ -3792,7 +3946,7 @@
 
     // Order info
     const info = document.createElement('div');
-    info.style.cssText = 'font-size:12px;color:#94a3b8;margin-bottom:14px;';
+    info.style.cssText = 'font-size:var(--sb-fs-12);color:#94a3b8;margin-bottom:14px;';
     info.textContent = orderMonthLabel(order) + ' order';
     box.appendChild(info);
 
@@ -3805,7 +3959,7 @@
     // Custom comment textarea (shown when "Other" is selected)
     const otherTa = document.createElement('textarea');
     otherTa.placeholder = 'Custom reason / comment…';
-    otherTa.style.cssText = 'width:100%;min-height:60px;padding:6px 8px;background:#0f172a;border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#e2e8f0;font-size:12px;font-family:inherit;box-sizing:border-box;margin-bottom:14px;display:none;';
+    otherTa.style.cssText = 'width:100%;min-height:60px;padding:6px 8px;background:#0f172a;border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#e2e8f0;font-size:var(--sb-fs-12);font-family:inherit;box-sizing:border-box;margin-bottom:14px;display:none;';
     box.appendChild(otherTa);
     select.addEventListener('change', () => {
       otherTa.style.display = select.value === '__OTHER__' ? 'block' : 'none';
@@ -3880,7 +4034,7 @@
 
     // Details
     const details = document.createElement('div');
-    details.style.cssText = 'background:#0f172a;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:12px;line-height:1.8;color:#cbd5e1;';
+    details.style.cssText = 'background:#0f172a;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);line-height:1.8;color:#cbd5e1;';
     const perCredit = credits[0]?.total || credits[0]?.amount || 0;
     const creditLine = credits.length === 1
       ? fmtMoney(perCredit, currency) + ' credit'
@@ -3894,7 +4048,7 @@
       <div><span style="color:#64748b;">Date</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${dateStr}</div>
       <div><span style="color:#64748b;">Method</span>&nbsp;&nbsp;&nbsp; ${pmMethod}</div>
       <div><span style="color:#64748b;">Credits</span>&nbsp;&nbsp;&nbsp; ${creditLine}${shippingLine}</div>
-      <div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.07);font-weight:700;font-size:13px;color:#e2e8f0;">
+      <div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.07);font-weight:700;font-size:var(--sb-fs-13);color:#e2e8f0;">
         Total refund: ${fmtMoney(totalCents, currency)}
       </div>`;
     box.appendChild(details);
@@ -3903,7 +4057,7 @@
     const existingRefunds = charge?.cashbirdDetails?.invoice?.refunds || [];
     if (existingRefunds.length) {
       const refWarn = document.createElement('div');
-      refWarn.style.cssText = 'background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:11px;color:#f59e0b;line-height:1.6;';
+      refWarn.style.cssText = 'background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:var(--sb-fs-11);color:#f59e0b;line-height:1.6;';
       const refundLines = existingRefunds.map(r => {
         const amt = fmtMoney(r.amount, currency);
         const status = r.status === 'TRACKING_REFUND_IN_PROCESS' ? 'in progress' : (r.status || '').toLowerCase().replace(/_/g,' ');
@@ -3919,7 +4073,7 @@
     const refundedItems = dlgLineItems.filter(li => li.refundedAmount !== null && li.refundedAmount !== undefined && li.total > 0);
     if (refundedItems.length) {
       const liWarn = document.createElement('div');
-      liWarn.style.cssText = 'font-size:11px;color:#94a3b8;margin-bottom:10px;line-height:1.8;';
+      liWarn.style.cssText = 'font-size:var(--sb-fs-11);color:#94a3b8;margin-bottom:10px;line-height:1.8;';
       refundedItems.forEach(li => {
         const row = document.createElement('div');
         const fullyRefunded = li.refundedAmount >= li.total;
@@ -3938,7 +4092,7 @@
     box.appendChild(reasonSel);
 
     const warn = document.createElement('div');
-    warn.style.cssText = 'font-size:12px;color:#fca5a5;margin-bottom:14px;line-height:1.5;';
+    warn.style.cssText = 'font-size:var(--sb-fs-12);color:#fca5a5;margin-bottom:14px;line-height:1.5;';
     warn.textContent = 'This will refund the payment to the customer. This cannot be undone.';
     box.appendChild(warn);
 
@@ -4083,7 +4237,7 @@
     wrap.style.cssText = 'margin-top:10px;';
 
     const infoEl = document.createElement('div');
-    infoEl.style.cssText = 'display:none;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:12px;color:#f59e0b;line-height:1.6;';
+    infoEl.style.cssText = 'display:none;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:var(--sb-fs-12);color:#f59e0b;line-height:1.6;';
     wrap.appendChild(infoEl);
 
     const btnRow = document.createElement('div');
@@ -4092,14 +4246,14 @@
 
     const billBtn = document.createElement('button');
     billBtn.textContent = '💳 Bill Upcharge';
-    billBtn.style.cssText = 'flex:1;padding:7px;border-radius:6px;border:none;background:#f59e0b;color:#000;font-weight:700;font-size:12px;cursor:pointer;';
+    billBtn.style.cssText = 'flex:1;padding:7px;border-radius:6px;border:none;background:#f59e0b;color:#000;font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;';
     billBtn.onmouseenter = () => billBtn.style.background = '#d97706';
     billBtn.onmouseleave = () => billBtn.style.background = '#f59e0b';
     btnRow.appendChild(billBtn);
 
     const skipBtn = document.createElement('button');
     skipBtn.textContent = 'Billed Already';
-    skipBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#94a3b8;font-size:12px;cursor:pointer;';
+    skipBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#94a3b8;font-size:var(--sb-fs-12);cursor:pointer;';
     btnRow.appendChild(skipBtn);
 
     const statusEl = makeStatusEl();
@@ -4145,7 +4299,7 @@
       const { overlay, box } = createModal({ id: 'sb-upcharge-modal', title: '💳 Bill Upcharge', width: 320 });
 
       const detailsEl = document.createElement('div');
-      detailsEl.style.cssText = 'background:#0f172a;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#cbd5e1;line-height:1.8;';
+      detailsEl.style.cssText = 'background:#0f172a;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:#cbd5e1;line-height:1.8;';
 
       // List upcharge products
       let detailsHtml = '';
@@ -4156,7 +4310,7 @@
           detailsHtml += `<div>${pi.name} by ${pi.brand} — <span style="color:#f59e0b;font-weight:600;">+$${up}</span></div>`;
         }
       });
-      detailsHtml += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.07);font-weight:700;font-size:13px;color:#e2e8f0;">Total: $${total}</div>`;
+      detailsHtml += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.07);font-weight:700;font-size:var(--sb-fs-13);color:#e2e8f0;">Total: $${total}</div>`;
       detailsEl.innerHTML = detailsHtml;
       box.appendChild(detailsEl);
 
@@ -4231,7 +4385,7 @@
     panel.style.cssText = `
       all:initial;position:fixed;top:50%;left:50%;transform:translate(-110%, -50%);
       width:520px;max-height:80vh;overflow-y:auto;
-      background:#1e1e2e;color:#e2e8f0;font-family:Arial,sans-serif;font-size:13px;
+      background:#1e1e2e;color:#e2e8f0;font-family:Arial,sans-serif;font-size:var(--sb-fs-13);
       border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,0.5);padding:14px;
       z-index:10000001;border:1px solid rgba(255,255,255,0.1);box-sizing:border-box;
     `;
@@ -4239,10 +4393,10 @@
     // Header
     const hdr = document.createElement('div');
     hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;';
-    hdr.innerHTML = '<span style="font-weight:700;font-size:14px;">🔍 Product Search</span>';
+    hdr.innerHTML = '<span style="font-weight:700;font-size:var(--sb-fs-14);">🔍 Product Search</span>';
     const closeBtn = document.createElement('button');
     closeBtn.textContent = 'Close \u2715';
-    closeBtn.style.cssText = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#94a3b8;font-size:11px;font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
+    closeBtn.style.cssText = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#94a3b8;font-size:var(--sb-fs-11);font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
     closeBtn.onmouseenter = () => closeBtn.style.background = 'rgba(255,255,255,0.15)';
     closeBtn.onmouseleave = () => closeBtn.style.background = 'rgba(255,255,255,0.08)';
     closeBtn.onclick = () => panel.remove();
@@ -4255,10 +4409,10 @@
     const searchInput = document.createElement('input');
     searchInput.type = 'text';
     searchInput.placeholder = 'Search by name...';
-    searchInput.style.cssText = 'flex:1;padding:7px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:#2a2a3e;color:#e2e8f0;font-size:13px;outline:none;box-sizing:border-box;';
+    searchInput.style.cssText = 'flex:1;padding:7px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:#2a2a3e;color:#e2e8f0;font-size:var(--sb-fs-13);outline:none;box-sizing:border-box;';
     const searchBtn = document.createElement('button');
     searchBtn.textContent = 'Search';
-    searchBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:13px;cursor:pointer;';
+    searchBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:var(--sb-fs-13);cursor:pointer;';
     inputRow.appendChild(searchInput);
     inputRow.appendChild(searchBtn);
     panel.appendChild(inputRow);
@@ -4268,8 +4422,8 @@
 
     function doSearch() {
       const q = searchInput.value.trim();
-      if (!q || q.length < 2) { resultsEl.innerHTML = '<div style="color:#94a3b8;font-size:12px;">Type at least 2 characters.</div>'; return; }
-      resultsEl.innerHTML = '<div style="color:#94a3b8;font-size:12px;">Searching…</div>';
+      if (!q || q.length < 2) { resultsEl.innerHTML = '<div style="color:#94a3b8;font-size:var(--sb-fs-12);">Type at least 2 characters.</div>'; return; }
+      resultsEl.innerHTML = '<div style="color:#94a3b8;font-size:var(--sb-fs-12);">Searching…</div>';
 
       crmRequest({
         method: 'POST', url: GRAPHQL_URL,
@@ -4288,7 +4442,7 @@
             const products = json?.data?.productSuggestion?.data || [];
             const err = json?.data?.productSuggestion?.error?.message;
             if (err) { resultsEl.innerHTML = `<div style="color:#fca5a5;">${err}</div>`; return; }
-            if (!products.length) { resultsEl.innerHTML = '<div style="color:#94a3b8;font-size:12px;">No products found.</div>'; return; }
+            if (!products.length) { resultsEl.innerHTML = '<div style="color:#94a3b8;font-size:var(--sb-fs-12);">No products found.</div>'; return; }
             renderProductResults(products);
           } catch(e) {
             resultsEl.innerHTML = '<div style="color:#fca5a5;">Parse error.</div>';
@@ -4301,7 +4455,7 @@
     function renderProductResults(products) {
       resultsEl.innerHTML = '';
       const count = document.createElement('div');
-      count.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:11px;';
+      count.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:var(--sb-fs-11);';
       count.textContent = products.length + ' result(s)';
       resultsEl.appendChild(count);
 
@@ -4315,13 +4469,13 @@
         const col = document.createElement('div');
         col.style.cssText = 'flex:1;min-width:0;';
         const hdr = document.createElement('div');
-        hdr.style.cssText = 'font-size:10px;font-weight:600;color:#64748b;letter-spacing:0.05em;margin-bottom:6px;';
+        hdr.style.cssText = 'font-size:var(--sb-fs-10);font-weight:600;color:#64748b;letter-spacing:0.05em;margin-bottom:6px;';
         hdr.textContent = title;
         col.appendChild(hdr);
 
         if (!items.length) {
           const empty = document.createElement('div');
-          empty.style.cssText = 'font-size:11px;color:#475569;';
+          empty.style.cssText = 'font-size:var(--sb-fs-11);color:#475569;';
           empty.textContent = 'No results';
           col.appendChild(empty);
         }
@@ -4342,7 +4496,7 @@
           leftCol.style.cssText = 'flex:1;min-width:0;';
 
           const nameEl = document.createElement('div');
-          nameEl.style.cssText = 'font-size:11px;font-weight:600;color:#e2e8f0;';
+          nameEl.style.cssText = 'font-size:var(--sb-fs-11);font-weight:600;color:#e2e8f0;';
           nameEl.textContent = info.name + ' by ' + info.brand;
           leftCol.appendChild(nameEl);
 
@@ -4352,7 +4506,7 @@
           // Add-on tag for Extras
           if (product.section === 'Extras') {
             const addonBadge = document.createElement('span');
-            addonBadge.style.cssText = 'font-size:9px;padding:1px 4px;border-radius:3px;background:rgba(167,139,250,0.15);color:#c4b5fd;border:1px solid rgba(167,139,250,0.3);';
+            addonBadge.style.cssText = 'font-size:var(--sb-fs-9);padding:1px 4px;border-radius:3px;background:rgba(167,139,250,0.15);color:#c4b5fd;border:1px solid rgba(167,139,250,0.3);';
             addonBadge.textContent = 'add-on';
             tagsRow.appendChild(addonBadge);
           }
@@ -4360,7 +4514,7 @@
           // Upcharge badge
           if (info.upchargePrice && info.upchargePrice > 0) {
             const upBadge = document.createElement('span');
-            upBadge.style.cssText = 'font-size:9px;padding:1px 4px;border-radius:3px;background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.3);';
+            upBadge.style.cssText = 'font-size:var(--sb-fs-9);padding:1px 4px;border-radius:3px;background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.3);';
             upBadge.textContent = '+$' + info.upchargePrice;
             tagsRow.appendChild(upBadge);
           }
@@ -4369,7 +4523,7 @@
           if (product.status && product.status !== 'LIVE') {
             const stockBadge = document.createElement('span');
             const stockLabel = product.status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
-            stockBadge.style.cssText = 'font-size:9px;padding:1px 4px;border-radius:3px;background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);';
+            stockBadge.style.cssText = 'font-size:var(--sb-fs-9);padding:1px 4px;border-radius:3px;background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);';
             stockBadge.textContent = stockLabel;
             tagsRow.appendChild(stockBadge);
           }
@@ -4383,7 +4537,7 @@
           const addBtn = document.createElement('button');
           addBtn.textContent = '＋';
           addBtn.title = 'Add to replacement';
-          addBtn.style.cssText = 'padding:3px 8px;border-radius:4px;border:1px solid #6366f1;background:transparent;color:#a5b4fc;font-weight:700;font-size:12px;cursor:pointer;flex-shrink:0;';
+          addBtn.style.cssText = 'padding:3px 8px;border-radius:4px;border:1px solid #6366f1;background:transparent;color:#a5b4fc;font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;flex-shrink:0;';
           addBtn.onmouseenter = () => addBtn.style.background = 'rgba(99,102,241,0.15)';
           addBtn.onmouseleave = () => addBtn.style.background = 'transparent';
           addBtn.onclick = () => {
@@ -4401,20 +4555,20 @@
             const row = document.createElement('div');
             row.style.cssText = 'margin-bottom:6px;border-left:2px solid #6366f1;padding-left:6px;';
             const lbl = document.createElement('label');
-            lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#a5b4fc;flex-wrap:wrap;';
+            lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-12);color:#a5b4fc;flex-wrap:wrap;';
             lbl.appendChild(chk);
             lbl.appendChild(document.createTextNode(info.name + ' by ' + info.brand));
 
             if (vol) {
               const volTag = document.createElement('span');
               const volText = unit === 'oz' ? vol.toFixed(2) + 'oz' : vol + unit;
-              volTag.style.cssText = 'font-size:10px;color:#94a3b8;';
+              volTag.style.cssText = 'font-size:var(--sb-fs-10);color:#94a3b8;';
               volTag.textContent = '(' + volText + ')';
               lbl.appendChild(volTag);
             }
 
             const addedTag = document.createElement('span');
-            addedTag.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(99,102,241,0.2);color:#a5b4fc;border:1px solid rgba(99,102,241,0.3);';
+            addedTag.style.cssText = 'font-size:var(--sb-fs-10);padding:1px 5px;border-radius:3px;background:rgba(99,102,241,0.2);color:#a5b4fc;border:1px solid rgba(99,102,241,0.3);';
             addedTag.textContent = 'Added';
             lbl.appendChild(addedTag);
 
@@ -4462,10 +4616,14 @@
       ? new Date(order.year, order.month - 1).toLocaleString('en-US', { month:'short', year:'numeric' })
       : 'Order';
 
-    const { overlay, box: form } = createModal({
+    const form = createPanel({
       id: 'sb-replacement-form',
       title: '\uD83D\uDD04 Replacement — ' + monthLabel,
       width: 400,
+      maxHeight: 720,
+      centered: true,
+      draggable: true,
+      onClose: () => document.getElementById('sb-product-search-panel')?.remove(),
     });
 
     // Reason
@@ -4505,7 +4663,7 @@
       row.style.cssText = 'margin-bottom:6px;';
 
       const lbl = document.createElement('label');
-      lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#cbd5e1;flex-wrap:wrap;';
+      lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-12);color:#cbd5e1;flex-wrap:wrap;';
       const chk = document.createElement('input');
       chk.type = 'checkbox'; chk.checked = true;
       chk.style.cssText = 'cursor:pointer;accent-color:#818cf8;flex-shrink:0;';
@@ -4513,7 +4671,7 @@
       lbl.appendChild(document.createTextNode(name));
       if (stockBadge) {
         const badge = document.createElement('span');
-        badge.style.cssText = `font-size:10px;font-weight:600;color:${stockBadge.color};white-space:nowrap;`;
+        badge.style.cssText = `font-size:var(--sb-fs-10);font-weight:600;color:${stockBadge.color};white-space:nowrap;`;
         badge.textContent = '● ' + stockBadge.text;
         lbl.appendChild(badge);
       }
@@ -4524,7 +4682,7 @@
         const starterRow = document.createElement('div');
         starterRow.style.cssText = 'margin-left:22px;margin-top:3px;';
         const sLbl = document.createElement('label');
-        sLbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;color:#94a3b8;';
+        sLbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-11);color:#94a3b8;';
         starterChk = document.createElement('input');
         starterChk.type = 'checkbox'; starterChk.checked = true;
         starterChk.style.cssText = 'cursor:pointer;accent-color:#818cf8;';
@@ -4545,7 +4703,7 @@
     searchRow.style.cssText = 'margin-top:8px;';
     const searchProductBtn = document.createElement('button');
     searchProductBtn.textContent = '🔍 Search Product';
-    searchProductBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid #818cf8;background:transparent;color:#818cf8;font-weight:600;font-size:11px;cursor:pointer;';
+    searchProductBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid #818cf8;background:transparent;color:#818cf8;font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;';
     searchProductBtn.onmouseenter = () => searchProductBtn.style.background = 'rgba(129,140,248,0.15)';
     searchProductBtn.onmouseleave = () => searchProductBtn.style.background = 'transparent';
     searchProductBtn.onclick = () => showProductSearchPanel(itemChecks, itemsWrap, () => upchargeUI.refresh());
@@ -4557,7 +4715,7 @@
     const commentInput = document.createElement('textarea');
     commentInput.placeholder = 'Add a note...';
     commentInput.rows = 2;
-    commentInput.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:12px;box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;';
+    commentInput.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-12);box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;';
     form.appendChild(commentInput);
 
     // Options
@@ -4567,13 +4725,13 @@
 
     function makeCheckRow(labelText, defaultChecked = false) {
       const lbl = document.createElement('label');
-      lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#cbd5e1;';
+      lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-12);color:#cbd5e1;';
       const chk = document.createElement('input');
       chk.type = 'checkbox'; chk.checked = defaultChecked;
       chk.style.cssText = 'cursor:pointer;accent-color:#818cf8;';
       const warn = document.createElement('span');
       warn.textContent = '⚠';
-      warn.style.cssText = 'color:#f59e0b;font-size:14px;display:none;margin-left:2px;';
+      warn.style.cssText = 'color:#f59e0b;font-size:var(--sb-fs-14);display:none;margin-left:2px;';
       lbl.appendChild(chk);
       lbl.appendChild(document.createTextNode(labelText));
       lbl.appendChild(warn);
@@ -4611,7 +4769,7 @@
     confirmBtn.style.cssText = `
       margin-top:14px;width:100%;padding:9px;border-radius:6px;
       border:none;background:#6366f1;color:#fff;font-weight:700;
-      font-size:13px;cursor:pointer;box-sizing:border-box;
+      font-size:var(--sb-fs-13);cursor:pointer;box-sizing:border-box;
     `;
     confirmBtn.onmouseenter = () => confirmBtn.style.background = '#4f46e5';
     confirmBtn.onmouseleave = () => confirmBtn.style.background = '#6366f1';
@@ -4721,7 +4879,7 @@
                     statusEl.textContent = '\u2714 Done!';
                   }
                   confirmBtn.textContent = '\u2714 Done';
-                  setTimeout(() => { overlay.remove(); document.getElementById('sb-product-search-panel')?.remove(); }, 2000);
+                  setTimeout(() => { form.remove(); document.getElementById('sb-product-search-panel')?.remove(); }, 2000);
                 }
               );
             };
@@ -5015,7 +5173,7 @@
           top:${rect.bottom + 4}px;left:${rect.left}px;
           background:#1e1e2e;border:1px solid rgba(255,255,255,0.15);border-radius:7px;
           box-shadow:0 8px 24px rgba(0,0,0,0.5);overflow:hidden;
-          font-family:Arial,sans-serif;font-size:12px;min-width:120px;
+          font-family:Arial,sans-serif;font-size:var(--sb-fs-12);min-width:120px;
         `;
 
         options.forEach(opt => {
@@ -5141,7 +5299,7 @@
       all:initial;position:fixed;z-index:9999999;
       background:#1e1e2e;border:1px solid rgba(255,255,255,0.15);border-radius:7px;
       box-shadow:0 8px 24px rgba(0,0,0,0.5);overflow:hidden;
-      font-family:Arial,sans-serif;font-size:12px;min-width:200px;
+      font-family:Arial,sans-serif;font-size:var(--sb-fs-12);min-width:200px;
     `;
     picker.style.left = caretRect.left + 'px';
     picker.style.top  = (caretRect.bottom + 4) + 'px';
@@ -5151,7 +5309,7 @@
     const rows = matches.map((v, i) => {
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:6px 12px;cursor:pointer;gap:16px;';
-      row.innerHTML = `<span style="color:#e2e8f0;font-weight:600;">[${v.key}]</span><span style="color:#64748b;font-size:11px;">${v.label}</span>`;
+      row.innerHTML = `<span style="color:#e2e8f0;font-weight:600;">[${v.key}]</span><span style="color:#64748b;font-size:var(--sb-fs-11);">${v.label}</span>`;
       row.addEventListener('mouseenter', () => { selected = i; highlight(); });
       row.addEventListener('mousedown', (e) => { e.preventDefault(); insertVariable(v.key); });
       return row;
@@ -5324,7 +5482,29 @@
 
     const bar = document.createElement('div');
     bar.id = 'sb-user-info-bar';
-    bar.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:4px 10px;background:#0f172a;border-top:1px solid rgba(255,255,255,0.06);font-family:Arial,sans-serif;font-size:11px;';
+    bar.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 10px;background:#0f172a;border-top:1px solid rgba(255,255,255,0.06);font-family:Arial,sans-serif;font-size:var(--sb-fs-11);';
+
+    // Identity line: name · email · shipping address (above the tag groups)
+    const idLine = document.createElement('div');
+    idLine.style.cssText = 'color:#94a3b8;';
+    const _u  = cachedCustomerCtx?.user;
+    const _sh = cachedCustomerCtx?._shippingAddress;
+    const _idParts = [];
+    if (_u) {
+      const nameEmail = `${_u.firstName || ''} ${_u.lastName || ''} · ${_u.email || ''}`.replace(/\s+/g, ' ').trim();
+      if (nameEmail) _idParts.push(nameEmail);
+    }
+    const _addrStr = formatShippingAddress(_sh);
+    if (_addrStr) _idParts.push(_addrStr);
+    if (_idParts.length) {
+      idLine.textContent = _idParts.join(' · ');
+      bar.appendChild(idLine);
+    }
+
+    // Tags row container (the original horizontal flow)
+    const tagsRow = document.createElement('div');
+    tagsRow.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;gap:6px;';
+    bar.appendChild(tagsRow);
 
     function makeGroup() {
       const g = document.createElement('div');
@@ -5382,7 +5562,7 @@
       group1.appendChild(gTag);
     }
 
-    bar.appendChild(group1);
+    tagsRow.appendChild(group1);
 
     // Group 2: Plan + add-ons
     const group2 = makeGroup();
@@ -5390,6 +5570,12 @@
     if (sub.planName) {
       const planLabel = PLAN_LABELS[sub.planName] || sub.planName.replace(/_/g, ' ').toLowerCase();
       group2.appendChild(makeTag(planLabel, '#c4b5fd', 'rgba(167,139,250,0.1)', 'rgba(167,139,250,0.25)'));
+    }
+
+    const remainingCredits = (sub.credits || []).filter(c => c.status === 'NEW').length;
+    if (remainingCredits > 0) {
+      const label = `🎟 ${remainingCredits} credit${remainingCredits === 1 ? '' : 's'}`;
+      group2.appendChild(makeTag(label, '#6ee7b7', 'rgba(110,231,183,0.1)', 'rgba(110,231,183,0.3)'));
     }
 
     const addOnLabels = {
@@ -5406,7 +5592,7 @@
       }
     });
 
-    if (group2.children.length) bar.appendChild(group2);
+    if (group2.children.length) tagsRow.appendChild(group2);
 
     // Group 3: Location tags (Canada, UK, Hawaii/Alaska/Puerto Rico)
     const shipping = cachedCustomerCtx?.user?.userAddress?.shipping;
@@ -5425,7 +5611,7 @@
       } else if (['PR', 'PUERTO RICO'].includes(region)) {
         locationGroup.appendChild(makeTag('🌴 Puerto Rico', '#34d399', 'rgba(52,211,153,0.1)', 'rgba(52,211,153,0.25)'));
       }
-      if (locationGroup.children.length) bar.appendChild(locationGroup);
+      if (locationGroup.children.length) tagsRow.appendChild(locationGroup);
     }
 
     // Group 4: Warnings (addr, fraud, chargeback — fraud/chargeback appended async)
@@ -5440,7 +5626,7 @@
       group3.style.display = '';
     }
 
-    bar.appendChild(group3);
+    tagsRow.appendChild(group3);
 
     const slot = document.getElementById('sb-info-bar-slot');
     if (slot) {
@@ -5496,6 +5682,7 @@
             if (userData.gwebLink) cachedCustomerCtx._gwebLink = userData.gwebLink;
             if (userData.gender) cachedCustomerCtx._gender = userData.gender;
             if (userData.userAddress?.shipping?.id) cachedCustomerCtx._shippingAddrId = userData.userAddress.shipping.id;
+            if (userData.userAddress?.shipping)     cachedCustomerCtx._shippingAddress = userData.userAddress.shipping;
           }
 
           // Subscription
