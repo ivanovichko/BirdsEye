@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.10.1
+// @version      8.10.2
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -121,14 +121,14 @@
 
     if (err) {
       clearPendingAuth();
-      showStatus('Sign-in failed: ' + err, '#fca5a5');
+      showStatus('Sign-in failed: ' + err, 'var(--sb-danger)');
       setTimeout(() => { try { window.close(); } catch(e) {} }, 2500);
       return;
     }
     const pending = getPendingAuth();
     if (!code || !state || !pending || pending.state !== state) {
       clearPendingAuth();
-      showStatus('Sign-in failed: invalid state', '#fca5a5');
+      showStatus('Sign-in failed: invalid state', 'var(--sb-danger)');
       setTimeout(() => { try { window.close(); } catch(e) {} }, 2500);
       return;
     }
@@ -157,23 +157,23 @@
             clearPendingAuth();
             // Warm up DataDome by navigating to CRM root. Opener watches for tokens
             // landing in storage and closes this popup after the warm-up window.
-            showStatus('Warming up CRM session…', '#fcd34d');
+            showStatus('Warming up CRM session…', 'var(--sb-warning)');
             try { location.replace('https://crm.scentbird.com/'); } catch(e) {
               // Fallback: if navigation fails, close ourselves.
               setTimeout(() => { try { window.close(); } catch(_) {} }, 800);
             }
           } else {
             clearPendingAuth();
-            showStatus('Token exchange failed: ' + (json.error_description || json.error || res.status), '#fca5a5');
+            showStatus('Token exchange failed: ' + (json.error_description || json.error || res.status), 'var(--sb-danger)');
           }
         } catch(e) {
           clearPendingAuth();
-          showStatus('Token exchange parse error', '#fca5a5');
+          showStatus('Token exchange parse error', 'var(--sb-danger)');
         }
       },
       onerror() {
         clearPendingAuth();
-        showStatus('Network error during token exchange', '#fca5a5');
+        showStatus('Network error during token exchange', 'var(--sb-danger)');
       },
     });
   }
@@ -262,6 +262,39 @@
 
         /* Shadow */
         --sb-shadow: 0 12px 40px rgba(0,0,0,0.5);
+
+        /* Accents — used for buttons, status badges, plaques. Flipped in light theme. */
+        --sb-accent:          #a5b4fc;
+        --sb-accent-strong:   #818cf8;
+        --sb-success:         #86efac;
+        --sb-success-soft:    #6ee7b7;
+        --sb-warning:         #fcd34d;
+        --sb-warning-strong:  #f59e0b;
+        --sb-danger:          #fca5a5;
+        --sb-danger-strong:   #ef4444;
+        --sb-danger-border:   #dc2626;
+        --sb-info:            #60a5fa;
+
+        /* Tags in the user info bar — paired text/bg/border per flavor, theme-aware */
+        --sb-tag-plan-fg:        #c4b5fd;
+        --sb-tag-plan-bg:        rgba(167,139,250,0.1);
+        --sb-tag-plan-border:    rgba(167,139,250,0.25);
+        --sb-tag-success-bg:     rgba(110,231,183,0.1);
+        --sb-tag-success-border: rgba(110,231,183,0.3);
+        --sb-tag-warning-bg:     rgba(245,158,11,0.1);
+        --sb-tag-warning-border: rgba(245,158,11,0.25);
+        --sb-tag-danger-bg:      rgba(239,68,68,0.15);
+        --sb-tag-danger-border:  rgba(239,68,68,0.4);
+        --sb-tag-info-bg:        rgba(96,165,250,0.1);
+        --sb-tag-info-border:    rgba(96,165,250,0.25);
+        --sb-tag-muted-bg:       rgba(148,163,184,0.08);
+        --sb-tag-muted-border:   rgba(148,163,184,0.2);
+        --sb-tag-pink-fg:        #f472b6;
+        --sb-tag-pink-bg:        rgba(244,114,182,0.1);
+        --sb-tag-pink-border:    rgba(244,114,182,0.25);
+        --sb-tag-emerald-fg:     #34d399;
+        --sb-tag-emerald-bg:     rgba(52,211,153,0.1);
+        --sb-tag-emerald-border: rgba(52,211,153,0.25);
       }
 
       /* Light theme — Kustomer-soft palette */
@@ -272,18 +305,49 @@
         --sb-bg-row-replacement: #f5f0ff;
         --sb-bg-input:           #f7f7fa;
 
-        --sb-text:           #1f2937;
-        --sb-text-secondary: #475569;
-        --sb-text-muted:     #6b7280;
-        --sb-text-dim:       #9ca3af;
+        --sb-text:           #111827;
+        --sb-text-secondary: #1f2937;
+        --sb-text-muted:     #374151;
+        --sb-text-dim:       #4b5563;
 
-        --sb-border:      #e5e7eb;
-        --sb-border-soft: #f1f5f9;
+        --sb-border:      #cbd5e1;
+        --sb-border-soft: #e5e7eb;
 
-        --sb-control-bg:  rgba(0,0,0,0.04);
-        --sb-hover:       rgba(0,0,0,0.06);
+        --sb-control-bg:  rgba(0,0,0,0.06);
+        --sb-hover:       rgba(0,0,0,0.10);
 
-        --sb-shadow: 0 12px 40px rgba(0,0,0,0.08);
+        --sb-shadow: 0 12px 40px rgba(0,0,0,0.10);
+
+        --sb-accent:          #4f46e5;
+        --sb-accent-strong:   #4338ca;
+        --sb-success:         #15803d;
+        --sb-success-soft:    #16a34a;
+        --sb-warning:         #b45309;
+        --sb-warning-strong:  #92400e;
+        --sb-danger:          #b91c1c;
+        --sb-danger-strong:   #991b1b;
+        --sb-danger-border:   #b91c1c;
+        --sb-info:            #1d4ed8;
+
+        --sb-tag-plan-fg:        #4338ca;
+        --sb-tag-plan-bg:        rgba(99,102,241,0.14);
+        --sb-tag-plan-border:    rgba(99,102,241,0.4);
+        --sb-tag-success-bg:     rgba(22,163,74,0.14);
+        --sb-tag-success-border: rgba(22,163,74,0.4);
+        --sb-tag-warning-bg:     rgba(180,83,9,0.14);
+        --sb-tag-warning-border: rgba(180,83,9,0.4);
+        --sb-tag-danger-bg:      rgba(185,28,28,0.14);
+        --sb-tag-danger-border:  rgba(185,28,28,0.4);
+        --sb-tag-info-bg:        rgba(29,78,216,0.14);
+        --sb-tag-info-border:    rgba(29,78,216,0.4);
+        --sb-tag-muted-bg:       rgba(71,85,105,0.10);
+        --sb-tag-muted-border:   rgba(71,85,105,0.30);
+        --sb-tag-pink-fg:        #9d174d;
+        --sb-tag-pink-bg:        rgba(157,23,77,0.14);
+        --sb-tag-pink-border:    rgba(157,23,77,0.4);
+        --sb-tag-emerald-fg:     #047857;
+        --sb-tag-emerald-bg:     rgba(4,120,87,0.14);
+        --sb-tag-emerald-border: rgba(4,120,87,0.4);
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -447,13 +511,13 @@
     btn.style.display = '';
     if (state === 'solving') {
       btn.textContent = '⏳ Solving challenge…';
-      btn.style.color = '#fcd34d';
+      btn.style.color = 'var(--sb-warning)';
     } else if (state === 'captcha') {
       btn.textContent = '⚠ CRM Captcha';
-      btn.style.color = '#f59e0b';
+      btn.style.color = 'var(--sb-warning-strong)';
     } else {
       btn.textContent = '🔐 Sign in with Okta';
-      btn.style.color = state === 'reauth' ? '#fca5a5' : 'var(--sb-text)';
+      btn.style.color = state === 'reauth' ? 'var(--sb-danger)' : 'var(--sb-text)';
     }
   }
 
@@ -808,9 +872,9 @@
   /** High-contrast color for a tracking-event status. */
   function trackingStatusColor(status) {
     const s = (status || '').toUpperCase();
-    if (s === 'DELIVERED')                                                       return '#86efac'; // bright lime
-    if (s === 'OUT_FOR_DELIVERY' || s === 'IN_TRANSIT' || s === 'SHIPPED')       return '#fcd34d'; // warm yellow
-    if (s === 'RETURNED' || s === 'LOST' || s === 'FAILED' || s === 'EXCEPTION') return '#fca5a5'; // red
+    if (s === 'DELIVERED')                                                       return 'var(--sb-success)'; // bright lime
+    if (s === 'OUT_FOR_DELIVERY' || s === 'IN_TRANSIT' || s === 'SHIPPED')       return 'var(--sb-warning)'; // warm yellow
+    if (s === 'RETURNED' || s === 'LOST' || s === 'FAILED' || s === 'EXCEPTION') return 'var(--sb-danger)'; // red
     return 'var(--sb-text)'; // default bright
   }
 
@@ -818,10 +882,10 @@
   function makeProductStatusPlaque(status) {
     if (!status || status === 'LIVE') return null;
     const palette = {
-      OUT_OF_STOCK:                  { bg: 'rgba(245,158,11,0.15)', fg: '#fcd34d', border: 'rgba(245,158,11,0.4)' },
-      NOT_AVAILABLE_FOR_NEW_ORDERS:  { bg: 'rgba(245,158,11,0.15)', fg: '#fcd34d', border: 'rgba(245,158,11,0.4)' },
-      INTERNAL_USE:                  { bg: 'rgba(239,68,68,0.15)',  fg: '#fca5a5', border: 'rgba(239,68,68,0.4)'  },
-      DISCONTINUED:                  { bg: 'rgba(239,68,68,0.15)',  fg: '#fca5a5', border: 'rgba(239,68,68,0.4)'  },
+      OUT_OF_STOCK:                  { bg: 'rgba(245,158,11,0.15)', fg: 'var(--sb-warning)', border: 'rgba(245,158,11,0.4)' },
+      NOT_AVAILABLE_FOR_NEW_ORDERS:  { bg: 'rgba(245,158,11,0.15)', fg: 'var(--sb-warning)', border: 'rgba(245,158,11,0.4)' },
+      INTERNAL_USE:                  { bg: 'rgba(239,68,68,0.15)',  fg: 'var(--sb-danger)', border: 'rgba(239,68,68,0.4)'  },
+      DISCONTINUED:                  { bg: 'rgba(239,68,68,0.15)',  fg: 'var(--sb-danger)', border: 'rgba(239,68,68,0.4)'  },
     };
     const c = palette[status] || { bg: 'rgba(148,163,184,0.15)', fg: 'var(--sb-text-secondary)', border: 'rgba(148,163,184,0.4)' };
     const label = status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, ch => ch.toUpperCase());
@@ -848,7 +912,7 @@
     const b = document.createElement('button');
     b.textContent = label;
     b.title = 'Copy';
-    b.style.cssText = 'background:none;border:none;cursor:pointer;color:#818cf8;font-size:var(--sb-fs-13);padding:0 4px;flex-shrink:0;';
+    b.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--sb-accent-strong);font-size:var(--sb-fs-13);padding:0 4px;flex-shrink:0;';
     b.onclick = () => {
       const text = typeof textOrFn === 'function' ? textOrFn() : textOrFn;
       navigator.clipboard.writeText(text);
@@ -896,7 +960,7 @@
   }
 
   /** Standard action button pair (cancel + confirm) for dialogs. */
-  function makeDialogButtons({ confirmLabel, confirmColor = '#dc2626', onCancel, onConfirm }) {
+  function makeDialogButtons({ confirmLabel, confirmColor = 'var(--sb-danger-border)', onCancel, onConfirm }) {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
 
@@ -1548,7 +1612,7 @@
     // Token gate — check before anything else, including cache
     if (!getAccessToken()) {
       const orig = btn.textContent;
-      btn.textContent = '\u2718 Sign in'; btn.style.color = '#fca5a5';
+      btn.textContent = '\u2718 Sign in'; btn.style.color = 'var(--sb-danger)';
       setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; }, 2000);
       return;
     }
@@ -1562,7 +1626,7 @@
     btn.textContent = '\u23F3'; btn.disabled = true;
     const restore = () => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; };
     const fail = (msg) => {
-      btn.textContent = '\u2718 ' + msg; btn.style.color = '#fca5a5';
+      btn.textContent = '\u2718 ' + msg; btn.style.color = 'var(--sb-danger)';
       setTimeout(restore, 2000);
     };
 
@@ -1648,10 +1712,10 @@
     `;
 
     const _ws = (order.warehouseOrder?.data?.status || order.status || '').toUpperCase();
-    const statusColor = (_ws === 'SHIPPED' || _ws === 'DELIVERED') ? '#6ee7b7'
-      : (_ws.includes('CANCEL') || _ws.includes('BACK')) ? '#fca5a5'
-      : (_ws === 'PRINTED' || _ws.includes('PROCESS')) ? '#818cf8'
-      : (_ws === 'PENDING') ? '#f59e0b'
+    const statusColor = (_ws === 'SHIPPED' || _ws === 'DELIVERED') ? 'var(--sb-success-soft)'
+      : (_ws.includes('CANCEL') || _ws.includes('BACK')) ? 'var(--sb-danger)'
+      : (_ws === 'PRINTED' || _ws.includes('PROCESS')) ? 'var(--sb-accent-strong)'
+      : (_ws === 'PENDING') ? 'var(--sb-warning-strong)'
       : 'var(--sb-text-muted)';
 
     // Header row
@@ -1667,10 +1731,10 @@
     hdr.innerHTML = `
       <span style="color:var(--sb-text-muted);font-size:var(--sb-fs-11);">${orderMonthLabel(order)}</span>
       <span style="color:${statusColor};font-weight:600;font-size:var(--sb-fs-11);">${order.warehouseOrder?.data?.status || order.status}</span>
-      ${(order.type && order.type !== 'SUBSCRIPTION') ? `<span style="color:#f59e0b;font-size:var(--sb-fs-11);font-weight:600;">${order.type.replace(/_/g,' ')}</span>` : ''}
-      ${hasWelcomeKit ? '<span style="background:rgba(99,102,241,0.2);color:#a5b4fc;font-size:var(--sb-fs-10);font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(99,102,241,0.4);">Welcome Kit</span>' : ''}
-      ${hasSamples ? '<span style="background:rgba(245,158,11,0.15);color:#fcd34d;font-size:var(--sb-fs-10);font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(245,158,11,0.3);">Samples</span>' : ''}
-      ${hasCase ? '<span style="background:rgba(99,102,241,0.15);color:#a5b4fc;font-size:var(--sb-fs-10);font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(99,102,241,0.3);">Case</span>' : ''}
+      ${(order.type && order.type !== 'SUBSCRIPTION') ? `<span style="color:var(--sb-warning-strong);font-size:var(--sb-fs-11);font-weight:600;">${order.type.replace(/_/g,' ')}</span>` : ''}
+      ${hasWelcomeKit ? '<span style="background:rgba(99,102,241,0.2);color:var(--sb-accent);font-size:var(--sb-fs-10);font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(99,102,241,0.4);">Welcome Kit</span>' : ''}
+      ${hasSamples ? '<span style="background:rgba(245,158,11,0.15);color:var(--sb-warning);font-size:var(--sb-fs-10);font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(245,158,11,0.3);">Samples</span>' : ''}
+      ${hasCase ? '<span style="background:rgba(99,102,241,0.15);color:var(--sb-accent);font-size:var(--sb-fs-10);font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(99,102,241,0.3);">Case</span>' : ''}
     `;
     hdr.appendChild(makeCopyBtn(() => orderCopyText(order), '📋 Copy'));
     wrap.appendChild(hdr);
@@ -1701,11 +1765,11 @@
         const link = document.createElement('a');
         link.href = trackUrl; link.target = '_blank';
         link.textContent = trackNo || 'Track';
-        link.style.cssText = 'color:#818cf8;font-size:var(--sb-fs-11);text-decoration:none;';
+        link.style.cssText = 'color:var(--sb-accent-strong);font-size:var(--sb-fs-11);text-decoration:none;';
         tRow.appendChild(link);
       } else {
         const span = document.createElement('span');
-        span.style.cssText = 'color:#818cf8;font-size:var(--sb-fs-11);';
+        span.style.cssText = 'color:var(--sb-accent-strong);font-size:var(--sb-fs-11);';
         span.textContent = trackNo;
         tRow.appendChild(span);
       }
@@ -1714,7 +1778,7 @@
         const linkBtn = document.createElement('button');
         linkBtn.textContent = '🔗';
         linkBtn.title = 'Copy tracking link';
-        linkBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:#818cf8;font-size:var(--sb-fs-13);padding:0 4px;flex-shrink:0;';
+        linkBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--sb-accent-strong);font-size:var(--sb-fs-13);padding:0 4px;flex-shrink:0;';
         linkBtn.onclick = () => {
           navigator.clipboard.write([
             new ClipboardItem({
@@ -1758,7 +1822,7 @@
       replBtn.textContent = '\uD83D\uDD04 Replace';
       replBtn.disabled = isReplacementOrder;
       replBtn.title = isReplacementOrder ? 'Cannot replace a replacement order' : '';
-      replBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${isReplacementOrder ? 'rgba(99,102,241,0.3)' : '#6366f1'};background:transparent;color:${isReplacementOrder ? 'rgba(165,180,252,0.4)' : '#a5b4fc'};font-weight:600;font-size:var(--sb-fs-11);cursor:${isReplacementOrder ? 'not-allowed' : 'pointer'};`;
+      replBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${isReplacementOrder ? 'rgba(99,102,241,0.3)' : '#6366f1'};background:transparent;color:${isReplacementOrder ? 'rgba(165,180,252,0.4)' : 'var(--sb-accent)'};font-weight:600;font-size:var(--sb-fs-11);cursor:${isReplacementOrder ? 'not-allowed' : 'pointer'};`;
       if (!isReplacementOrder) {
         replBtn.onmouseenter = () => replBtn.style.background = 'rgba(99,102,241,0.15)';
         replBtn.onmouseleave = () => replBtn.style.background = 'transparent';
@@ -1768,17 +1832,15 @@
 
       const ws = (order.warehouseOrder?.data?.status || order.status || '').toUpperCase();
       const cancellable = !NON_REFUNDABLE_STATUSES.includes(ws);
+      if (cancellable) {
       const cancelOrderBtn = document.createElement('button');
       cancelOrderBtn.textContent = '\u274C Cancel Order';
-      cancelOrderBtn.disabled = !cancellable;
-      cancelOrderBtn.title = cancellable ? '' : `Cannot cancel — order is ${ws}`;
-      cancelOrderBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${cancellable ? '#dc2626' : 'rgba(220,38,38,0.3)'};background:transparent;color:${cancellable ? '#fca5a5' : 'rgba(252,165,165,0.4)'};font-weight:600;font-size:var(--sb-fs-11);cursor:${cancellable ? 'pointer' : 'not-allowed'};`;
-      if (cancellable) {
-        cancelOrderBtn.onmouseenter = () => cancelOrderBtn.style.background = 'rgba(220,38,38,0.15)';
-        cancelOrderBtn.onmouseleave = () => cancelOrderBtn.style.background = 'transparent';
-        cancelOrderBtn.onclick = () => showCancelOrderDialog(order, ctx.user, cancelOrderBtn);
-      }
+      cancelOrderBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid var(--sb-danger-border);background:transparent;color:var(--sb-danger);font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;';
+      cancelOrderBtn.onmouseenter = () => cancelOrderBtn.style.background = 'rgba(220,38,38,0.15)';
+      cancelOrderBtn.onmouseleave = () => cancelOrderBtn.style.background = 'transparent';
+      cancelOrderBtn.onclick = () => showCancelOrderDialog(order, ctx.user, cancelOrderBtn);
       btnRow.appendChild(cancelOrderBtn);
+      }
 
       // Hold / Unhold button
       const isOnHold = ws === 'ON_HOLD';
@@ -1786,7 +1848,7 @@
       if (canHold) {
         const holdBtn = document.createElement('button');
         holdBtn.textContent = isOnHold ? '▶ Unhold' : '⏸ Hold';
-        holdBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${isOnHold ? '#6ee7b7' : '#f59e0b'};background:transparent;color:${isOnHold ? '#6ee7b7' : '#f59e0b'};font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;`;
+        holdBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${isOnHold ? 'var(--sb-success-soft)' : 'var(--sb-warning-strong)'};background:transparent;color:${isOnHold ? 'var(--sb-success-soft)' : 'var(--sb-warning-strong)'};font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;`;
         holdBtn.onmouseenter = () => holdBtn.style.background = isOnHold ? 'rgba(110,231,183,0.15)' : 'rgba(245,158,11,0.15)';
         holdBtn.onmouseleave = () => holdBtn.style.background = 'transparent';
         holdBtn.onclick = () => {
@@ -1796,13 +1858,13 @@
           mut(order.id, (data, err) => {
             if (err) {
               holdBtn.textContent = '✘ ' + err;
-              holdBtn.style.color = '#fca5a5';
-              setTimeout(() => { holdBtn.disabled = false; holdBtn.textContent = isOnHold ? '▶ Unhold' : '⏸ Hold'; holdBtn.style.color = isOnHold ? '#6ee7b7' : '#f59e0b'; }, 2000);
+              holdBtn.style.color = 'var(--sb-danger)';
+              setTimeout(() => { holdBtn.disabled = false; holdBtn.textContent = isOnHold ? '▶ Unhold' : '⏸ Hold'; holdBtn.style.color = isOnHold ? 'var(--sb-success-soft)' : 'var(--sb-warning-strong)'; }, 2000);
               return;
             }
             holdBtn.textContent = '✔ Done';
-            holdBtn.style.color = '#6ee7b7';
-            holdBtn.style.borderColor = '#6ee7b7';
+            holdBtn.style.color = 'var(--sb-success-soft)';
+            holdBtn.style.borderColor = 'var(--sb-success-soft)';
             // Post comment on hold (not on unhold)
             if (!isOnHold && ctx?.user) {
               const monthLabel = orderMonthLabel(order);
@@ -1983,7 +2045,7 @@
     filterBtn.textContent = 'Filter Active';
     filterBtn.style.cssText = `
       padding:7px 10px;border-radius:6px;border:1px solid rgba(110,231,183,0.3);background:transparent;
-      color:#6ee7b7;font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;white-space:nowrap;
+      color:var(--sb-success-soft);font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;white-space:nowrap;
     `;
     let filterActive = false;
     filterBtn.onclick = () => {
@@ -2023,7 +2085,7 @@
         const s = user.userAddress?.shipping;
         const addr = s ? [s.street1,s.street2,s.city,s.region,s.postcode].filter(Boolean).join(', ') : '';
         const subSt = user.subscription?.status || '';
-        const subColor = subSt === 'Active' ? '#6ee7b7' : subSt ? '#fca5a5' : 'var(--sb-text-dim)';
+        const subColor = subSt === 'Active' ? 'var(--sb-success-soft)' : subSt ? 'var(--sb-danger)' : 'var(--sb-text-dim)';
         let subLabel = subSt || 'No subscription';
         if (subSt === 'Cancelled' && user.subscription?.subscriptionEndDate) {
           subLabel = 'Cancelled ' + fmtDateTag(user.subscription.subscriptionEndDate);
@@ -2032,7 +2094,7 @@
         if (isDrift) card.style.opacity = '0.5';
         card.innerHTML = `
           <div style="display:flex;justify-content:space-between;align-items:baseline;">
-            <div style="font-weight:700;">${user.firstName||''} ${user.lastName||''} ${isDrift ? '<span style="font-size:var(--sb-fs-10);color:#f59e0b;font-weight:600;background:rgba(245,158,11,0.15);padding:1px 5px;border-radius:3px;margin-left:4px;">' + user.origin + '</span>' : ''}</div>
+            <div style="font-weight:700;">${user.firstName||''} ${user.lastName||''} ${isDrift ? '<span style="font-size:var(--sb-fs-10);color:var(--sb-warning-strong);font-weight:600;background:rgba(245,158,11,0.15);padding:1px 5px;border-radius:3px;margin-left:4px;">' + user.origin + '</span>' : ''}</div>
             <div style="font-size:var(--sb-fs-11);font-weight:600;color:${subColor};">${subLabel}</div>
           </div>
           <div style="color:var(--sb-text-muted);margin-top:2px;">${user.email}</div>
@@ -2087,7 +2149,7 @@
       const q = input.value.trim(); if (!q) return;
       results.innerHTML = `<div style="color:var(--sb-text-muted);padding:8px 0;">Searching…</div>`;
       searchCRM(q, (users, err) => {
-        if (err) { results.innerHTML = `<div style="color:#fca5a5;padding:8px 0;">${err}</div>`; return; }
+        if (err) { results.innerHTML = `<div style="color:var(--sb-danger);padding:8px 0;">${err}</div>`; return; }
         if (!users.length) { results.innerHTML = `<div style="color:var(--sb-text-muted);padding:8px 0;">No users found.</div>`; return; }
         renderUsers(users, `${users.length} result(s)`);
       });
@@ -2284,7 +2346,7 @@
         const csBtn = document.createElement('button');
         csBtn.textContent = '📦 Custom Shipment';
         csBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #4f46e5;background:transparent;
-          color:#a5b4fc;font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
+          color:var(--sb-accent);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
         csBtn.onmouseenter = () => csBtn.style.background = 'rgba(79,70,229,0.1)';
         csBtn.onmouseleave = () => csBtn.style.background = 'transparent';
         csBtn.onclick = () => showCustomShipmentForm(user);
@@ -2307,7 +2369,7 @@
 
         if (!result) {
           const errEl = document.createElement('div');
-          errEl.style.color = '#fca5a5';
+          errEl.style.color = 'var(--sb-danger)';
           errEl.textContent = 'Failed to load charges.';
           panel.appendChild(errEl);
           return;
@@ -2318,7 +2380,7 @@
         // Failed charges
         if (failed?.length) {
           const failHdr = document.createElement('div');
-          failHdr.style.cssText = 'color:#fca5a5;font-size:var(--sb-fs-11);font-weight:600;margin-bottom:4px;';
+          failHdr.style.cssText = 'color:var(--sb-danger);font-size:var(--sb-fs-11);font-weight:600;margin-bottom:4px;';
           failHdr.textContent = `\u274C ${failed.length} failed charge attempt${failed.length > 1 ? 's' : ''}`;
           panel.appendChild(failHdr);
 
@@ -2331,7 +2393,7 @@
             row.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-11);margin-bottom:3px;display:flex;gap:8px;align-items:baseline;';
             row.innerHTML = `
               <span style="color:var(--sb-text-dim);white-space:nowrap;">${chargeDateLabel(c?.paymentDate || entry.date)}</span>
-              <span style="color:#fca5a5;white-space:nowrap;">${fmtMoney((c?.totalPrice || 0) * 100)}</span>
+              <span style="color:var(--sb-danger);white-space:nowrap;">${fmtMoney((c?.totalPrice || 0) * 100)}</span>
               <span style="color:var(--sb-text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${desc}</span>
             `;
             failWrap.appendChild(row);
@@ -2389,10 +2451,10 @@
           const refundAmt = lineItemsForRefundCalc.reduce((sum, li) => sum + (li.refundedAmount || 0), 0);
           const totalRefunded = refundAmt >= Math.round(c.totalPrice * 100);
           const refundTag = refundAmt > 0
-            ? ` <span style="font-size:var(--sb-fs-11);font-weight:600;color:${totalRefunded ? '#6ee7b7' : '#f59e0b'};">&#8617; ${fmtMoney(refundAmt, currency)} refunded</span>`
+            ? ` <span style="font-size:var(--sb-fs-11);font-weight:600;color:${totalRefunded ? 'var(--sb-success-soft)' : 'var(--sb-warning-strong)'};">&#8617; ${fmtMoney(refundAmt, currency)} refunded</span>`
             : '';
           cHdr.innerHTML = `
-            <span style="font-weight:700;font-size:var(--sb-fs-13);color:#6ee7b7;">\u2714 ${fmtMoney(c.totalPrice * 100, currency)}</span>${refundTag}
+            <span style="font-weight:700;font-size:var(--sb-fs-13);color:var(--sb-success-soft);">\u2714 ${fmtMoney(c.totalPrice * 100, currency)}</span>${refundTag}
             <span style="color:var(--sb-text-dim);font-size:var(--sb-fs-11);">${chargeDateLabel(billingDate)}</span>
           `;
           panel.appendChild(cHdr);
@@ -2413,7 +2475,7 @@
               const nameStr = (item.type === 'PREMIUM_PRODUCT_UPCHARGE' && item.description)
                 ? `${label} \u2014 ${item.description}` : label;
               const discPart = item.discount
-                ? `<span style="color:#6ee7b7;margin-right:4px;">-${fmtMoney(item.discount, currency)}</span>` : '';
+                ? `<span style="color:var(--sb-success-soft);margin-right:4px;">-${fmtMoney(item.discount, currency)}</span>` : '';
               const row = document.createElement('div');
               row.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;font-size:var(--sb-fs-12);';
               row.innerHTML = `
@@ -2541,8 +2603,8 @@
           // Order status if processed
           const orderStatus = block.processedSubscriptionOrder?.status;
           if (orderStatus) {
-            const statusColor = (orderStatus === 'SHIPPED' || orderStatus === 'DELIVERED') ? '#6ee7b7'
-              : orderStatus === 'PENDING' ? '#f59e0b' : 'var(--sb-text-muted)';
+            const statusColor = (orderStatus === 'SHIPPED' || orderStatus === 'DELIVERED') ? 'var(--sb-success-soft)'
+              : orderStatus === 'PENDING' ? 'var(--sb-warning-strong)' : 'var(--sb-text-muted)';
             const statusEl = document.createElement('span');
             statusEl.style.cssText = `font-size:var(--sb-fs-10);font-weight:600;color:${statusColor};`;
             statusEl.textContent = orderStatus;
@@ -2574,7 +2636,7 @@
             const upcharge = prod.upchargePrice || pi.upchargePrice;
             if (upcharge && upcharge > 0) {
               const upEl = document.createElement('span');
-              upEl.style.cssText = 'color:#f59e0b;font-size:var(--sb-fs-10);font-weight:600;white-space:nowrap;margin-right:4px;';
+              upEl.style.cssText = 'color:var(--sb-warning-strong);font-size:var(--sb-fs-10);font-weight:600;white-space:nowrap;margin-right:4px;';
               upEl.textContent = '+$' + (upcharge / 100).toFixed(0);
               row.appendChild(upEl);
             }
@@ -2588,7 +2650,7 @@
               delBtn.textContent = '✕';
               delBtn.title = 'Remove from queue';
               delBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--sb-text-dim);font-size:var(--sb-fs-13);padding:0 3px;flex-shrink:0;';
-              delBtn.onmouseenter = () => delBtn.style.color = '#fca5a5';
+              delBtn.onmouseenter = () => delBtn.style.color = 'var(--sb-danger)';
               delBtn.onmouseleave = () => delBtn.style.color = 'var(--sb-text-dim)';
               delBtn.onclick = () => {
                 delBtn.disabled = true;
@@ -2599,7 +2661,7 @@
                   customerApiDelete(prodFlatIdx, (data, err) => {
                     if (err) {
                       delBtn.textContent = '✕';
-                      delBtn.style.color = '#fca5a5';
+                      delBtn.style.color = 'var(--sb-danger)';
                       delBtn.disabled = false;
                       return;
                     }
@@ -2616,7 +2678,7 @@
                   ensureCustomerAuth((ok) => {
                     if (!ok) {
                       delBtn.textContent = '✕';
-                      delBtn.style.color = '#fca5a5';
+                      delBtn.style.color = 'var(--sb-danger)';
                       delBtn.disabled = false;
                       return;
                     }
@@ -2639,7 +2701,7 @@
           copyAllRow.style.cssText = 'display:flex;justify-content:flex-end;margin-top:8px;';
           const copyAllBtn = document.createElement('button');
           copyAllBtn.textContent = '📋 Copy All';
-          copyAllBtn.style.cssText = 'background:none;border:1px solid var(--sb-border);border-radius:5px;color:#818cf8;font-size:var(--sb-fs-11);padding:4px 10px;cursor:pointer;';
+          copyAllBtn.style.cssText = 'background:none;border:1px solid var(--sb-border);border-radius:5px;color:var(--sb-accent-strong);font-size:var(--sb-fs-11);padding:4px 10px;cursor:pointer;';
           copyAllBtn.onmouseenter = () => copyAllBtn.style.background = 'rgba(99,102,241,0.1)';
           copyAllBtn.onmouseleave = () => copyAllBtn.style.background = 'none';
           copyAllBtn.onclick = () => {
@@ -2726,7 +2788,7 @@
     searchRow.style.cssText = 'margin-top:8px;';
     const searchProductBtn = document.createElement('button');
     searchProductBtn.textContent = '🔍 Search Product';
-    searchProductBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid #818cf8;background:transparent;color:#818cf8;font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;';
+    searchProductBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid var(--sb-accent-strong);background:transparent;color:var(--sb-accent-strong);font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;';
     searchProductBtn.onmouseenter = () => searchProductBtn.style.background = 'rgba(129,140,248,0.15)';
     searchProductBtn.onmouseleave = () => searchProductBtn.style.background = 'transparent';
     searchProductBtn.onclick = () => {
@@ -2768,14 +2830,14 @@
             const credits = sub.credits || [];
             _availableCredits = credits.filter(c => c.status === 'NEW').length;
             creditInfo.textContent = _availableCredits + ' NEW credit(s) available';
-            creditInfo.style.color = _availableCredits > 0 ? '#6ee7b7' : '#f59e0b';
+            creditInfo.style.color = _availableCredits > 0 ? 'var(--sb-success-soft)' : 'var(--sb-warning-strong)';
           } else {
             creditInfo.textContent = 'No subscription found';
-            creditInfo.style.color = '#fca5a5';
+            creditInfo.style.color = 'var(--sb-danger)';
           }
         } catch(e) {
           creditInfo.textContent = 'Failed to load credits';
-          creditInfo.style.color = '#fca5a5';
+          creditInfo.style.color = 'var(--sb-danger)';
         }
       }
     });
@@ -2809,7 +2871,7 @@
         }));
 
       if (!selectedItems.length) {
-        statusEl.style.color = '#fca5a5';
+        statusEl.style.color = 'var(--sb-danger)';
         statusEl.textContent = 'Add at least one product.';
         return;
       }
@@ -2838,7 +2900,7 @@
         <div><span style="color:var(--sb-text-dim);">Products</span>&nbsp; ${selectedItems.length}</div>
       `;
       if (creditsToAdd > 0) {
-        detailsHtml += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--sb-control-bg);color:#f59e0b;font-weight:600;">${creditsToAdd} credit(s) will be added</div>`;
+        detailsHtml += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--sb-control-bg);color:var(--sb-warning-strong);font-weight:600;">${creditsToAdd} credit(s) will be added</div>`;
       }
       detailsEl.innerHTML = detailsHtml;
       confBox.appendChild(detailsEl);
@@ -2893,7 +2955,7 @@
                 const respErr = data?.customShipmentSave?.error;
                 const errMsg = err || respErr?.message;
                 if (errMsg) {
-                  confStatus.style.color = '#fca5a5';
+                  confStatus.style.color = 'var(--sb-danger)';
                   confStatus.textContent = '\u2718 ' + errMsg;
                   cBtn.disabled = false;
                   cancelBtn.disabled = false;
@@ -2917,13 +2979,13 @@
                   gqlMutate('createUserComment', CREATE_COMMENT_MUTATION,
                     { input: { userId: user.id, comment: commentText, zendeskUrl: window.location.href } },
                     () => {
-                      confStatus.style.color = '#6ee7b7';
+                      confStatus.style.color = 'var(--sb-success-soft)';
                       confStatus.textContent = '\u2714 Custom shipment created!';
                       cBtn.textContent = '\u2714 Done';
                       confirmBtn.disabled = true;
                       confirmBtn.textContent = '\u2714 Created';
                       confirmBtn.style.background = 'rgba(110,231,183,0.15)';
-                      confirmBtn.style.color = '#6ee7b7';
+                      confirmBtn.style.color = 'var(--sb-success-soft)';
                       setTimeout(() => {
                         confOverlay.remove();
                         form.remove();
@@ -2966,7 +3028,7 @@
                 const respErr = data?.addSupportCredits?.error;
                 const errMsg = err || respErr?.message;
                 if (errMsg) {
-                  confStatus.style.color = '#fca5a5';
+                  confStatus.style.color = 'var(--sb-danger)';
                   confStatus.textContent = '\u2718 Credit add failed: ' + errMsg;
                   cBtn.disabled = false;
                   cancelBtn.disabled = false;
@@ -3024,12 +3086,12 @@
       updateBtn.onclick = () => {
         const newEmail = emailInput.value.trim();
         if (!newEmail || !newEmail.includes('@')) {
-          emailStatus.style.color = '#fca5a5';
+          emailStatus.style.color = 'var(--sb-danger)';
           emailStatus.textContent = 'Enter a valid email.';
           return;
         }
         if (newEmail === user.email) {
-          emailStatus.style.color = '#f59e0b';
+          emailStatus.style.color = 'var(--sb-warning-strong)';
           emailStatus.textContent = 'Email is unchanged.';
           return;
         }
@@ -3043,13 +3105,13 @@
             const respErr = data?.userChangeEmail?.error;
             const errMsg = err || respErr?.message;
             if (errMsg) {
-              emailStatus.style.color = '#fca5a5';
+              emailStatus.style.color = 'var(--sb-danger)';
               emailStatus.textContent = '\u2718 ' + errMsg;
               updateBtn.disabled = false;
               updateBtn.textContent = 'Update';
               return;
             }
-            emailStatus.style.color = '#6ee7b7';
+            emailStatus.style.color = 'var(--sb-success-soft)';
             emailStatus.textContent = '\u2714 Email updated.';
             updateBtn.textContent = '✔';
             user.email = newEmail;
@@ -3090,7 +3152,7 @@
       genderBtn.onclick = () => {
         const newGender = genderSel.value;
         if (newGender === currentGender) {
-          genderStatus.style.color = '#f59e0b';
+          genderStatus.style.color = 'var(--sb-warning-strong)';
           genderStatus.textContent = 'Gender is unchanged.';
           return;
         }
@@ -3100,7 +3162,7 @@
 
         ensureCustomerAuth((ok) => {
           if (!ok) {
-            genderStatus.style.color = '#fca5a5';
+            genderStatus.style.color = 'var(--sb-danger)';
             genderStatus.textContent = '\u2718 Auth failed';
             genderBtn.disabled = false;
             genderBtn.textContent = 'Update';
@@ -3123,13 +3185,13 @@
               const respErr = data?.userPersonalInfoUpdate?.error;
               const errMsg = err || respErr?.message;
               if (errMsg) {
-                genderStatus.style.color = '#fca5a5';
+                genderStatus.style.color = 'var(--sb-danger)';
                 genderStatus.textContent = '\u2718 ' + errMsg;
                 genderBtn.disabled = false;
                 genderBtn.textContent = 'Update';
                 return;
               }
-              genderStatus.style.color = '#6ee7b7';
+              genderStatus.style.color = 'var(--sb-success-soft)';
               genderStatus.textContent = '\u2714 Gender updated.';
               genderBtn.textContent = '✔';
               if (cachedCustomerCtx) cachedCustomerCtx._gender = newGender;
@@ -3169,7 +3231,7 @@
       const updateAddrBtn = document.createElement('button');
       updateAddrBtn.textContent = '📍 Update Address';
       updateAddrBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #4f46e5;background:transparent;
-        color:#a5b4fc;font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
+        color:var(--sb-accent);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
       updateAddrBtn.onmouseenter = () => updateAddrBtn.style.background = 'rgba(79,70,229,0.1)';
       updateAddrBtn.onmouseleave = () => updateAddrBtn.style.background = 'transparent';
       updateAddrBtn.onclick = () => {
@@ -3179,7 +3241,7 @@
 
         ensureCustomerAuth((ok) => {
           if (!ok) {
-            addrAuthStatus.style.color = '#fca5a5';
+            addrAuthStatus.style.color = 'var(--sb-danger)';
             addrAuthStatus.textContent = '\u2718 Authentication failed';
             updateAddrBtn.disabled = false;
             updateAddrBtn.textContent = '📍 Update Address';
@@ -3279,7 +3341,7 @@
                     (detData, detErr) => {
                       addrResults.innerHTML = '';
                       if (detErr || !detData?.addressAutocompleteDetails?.data) {
-                        addrStatus.style.color = '#fca5a5';
+                        addrStatus.style.color = 'var(--sb-danger)';
                         addrStatus.textContent = '\u2718 Failed to load address details';
                         return;
                       }
@@ -3347,7 +3409,7 @@
             const valResult = valData?.addressValidate;
             const valErrMsg = valErr || valResult?.error?.message;
             if (valErrMsg) {
-              addrStatus.style.color = '#fca5a5';
+              addrStatus.style.color = 'var(--sb-danger)';
               addrStatus.textContent = '\u2718 ' + valErrMsg;
               addrSaveBtn.disabled = false;
               addrSaveBtn.textContent = 'Save Address';
@@ -3356,7 +3418,7 @@
 
             const validatedAddr = valResult?.data?.address;
             if (!validatedAddr) {
-              addrStatus.style.color = '#fca5a5';
+              addrStatus.style.color = 'var(--sb-danger)';
               addrStatus.textContent = '\u2718 Validation returned no address data';
               addrSaveBtn.disabled = false;
               addrSaveBtn.textContent = 'Save Address';
@@ -3365,7 +3427,7 @@
 
             const addrId = validatedAddr.id || cachedCustomerCtx?._shippingAddrId;
             if (!addrId) {
-              addrStatus.style.color = '#fca5a5';
+              addrStatus.style.color = 'var(--sb-danger)';
               addrStatus.textContent = '\u2718 No address ID available — try refreshing';
               addrSaveBtn.disabled = false;
               addrSaveBtn.textContent = 'Save Address';
@@ -3406,13 +3468,13 @@
               (updData, updErr) => {
                 const updErrMsg = updErr || updData?.addressUpdate?.error?.message;
                 if (updErrMsg) {
-                  addrStatus.style.color = '#fca5a5';
+                  addrStatus.style.color = 'var(--sb-danger)';
                   addrStatus.textContent = '\u2718 ' + updErrMsg;
                   addrSaveBtn.disabled = false;
                   addrSaveBtn.textContent = 'Save Address';
                   return;
                 }
-                addrStatus.style.color = '#6ee7b7';
+                addrStatus.style.color = 'var(--sb-success-soft)';
                 addrStatus.textContent = '\u2714 Address updated.';
                 addrSaveBtn.textContent = '✔ Saved';
                 const addrStr = [validatedAddr.street1, validatedAddr.city, validatedAddr.region, validatedAddr.postalCode].filter(Boolean).join(', ');
@@ -3459,7 +3521,7 @@
           const monthLbl = orderMonthLabel(lastOrder);
           const ws = lastOrder.warehouseOrder?.data?.status || lastOrder.status || '';
           const wsUC = ws.toUpperCase();
-          const statusColor = wsUC === 'DONE' ? '#6ee7b7' : '#fca5a5';
+          const statusColor = wsUC === 'DONE' ? 'var(--sb-success-soft)' : 'var(--sb-danger)';
           const lines = orderProductLines(lastOrder);
 
           const orderTop = document.createElement('div');
@@ -3482,12 +3544,12 @@
               const a = document.createElement('a');
               a.href = trackUrl; a.target = '_blank';
               a.textContent = trackNo;
-              a.style.cssText = 'color:#818cf8;font-size:var(--sb-fs-11);text-decoration:none;';
+              a.style.cssText = 'color:var(--sb-accent-strong);font-size:var(--sb-fs-11);text-decoration:none;';
               tRow.appendChild(a);
               const copyBtn = document.createElement('button');
               copyBtn.textContent = '\uD83D\uDD17';
               copyBtn.title = 'Copy tracking link';
-              copyBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:#818cf8;font-size:var(--sb-fs-12);padding:0 2px;';
+              copyBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--sb-accent-strong);font-size:var(--sb-fs-12);padding:0 2px;';
               copyBtn.onclick = () => {
                 navigator.clipboard.write([
                   new ClipboardItem({
@@ -3500,7 +3562,7 @@
               tRow.appendChild(copyBtn);
             } else {
               const sp = document.createElement('span');
-              sp.style.cssText = 'color:#818cf8;font-size:var(--sb-fs-11);';
+              sp.style.cssText = 'color:var(--sb-accent-strong);font-size:var(--sb-fs-11);';
               sp.textContent = trackNo;
               tRow.appendChild(sp);
             }
@@ -3549,7 +3611,7 @@
 
         if (isAlreadyCancelled) {
           const subStatusEl = document.createElement('div');
-          subStatusEl.style.cssText = 'font-size:var(--sb-fs-11);color:#f59e0b;margin-bottom:10px;';
+          subStatusEl.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-warning-strong);margin-bottom:10px;';
           subStatusEl.textContent = isAwaitingCancel
             ? '⚠ Subscription is already scheduled for cancellation'
             : '⚠ Subscription status: ' + subStatus;
@@ -3560,12 +3622,12 @@
         confirmBtn.textContent = 'Cancel Subscription';
         confirmBtn.disabled = isAlreadyCancelled;
         confirmBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:none;font-weight:700;font-size:var(--sb-fs-13);box-sizing:border-box;
-          background:${isAlreadyCancelled ? '#374151' : '#dc2626'};
+          background:${isAlreadyCancelled ? '#374151' : 'var(--sb-danger-border)'};
           color:${isAlreadyCancelled ? '#6b7280' : '#fff'};
           cursor:${isAlreadyCancelled ? 'not-allowed' : 'pointer'};`;
         if (!isAlreadyCancelled) {
           confirmBtn.onmouseenter = () => confirmBtn.style.background = '#b91c1c';
-          confirmBtn.onmouseleave = () => confirmBtn.style.background = '#dc2626';
+          confirmBtn.onmouseleave = () => confirmBtn.style.background = 'var(--sb-danger-border)';
         }
 
         confirmBtn.onclick = () => {
@@ -3575,7 +3637,7 @@
 
           fetchActiveSubscription(user.id, (subscriptionId, fetchErr) => {
             if (fetchErr || !subscriptionId) {
-              statusEl.style.color = '#fca5a5';
+              statusEl.style.color = 'var(--sb-danger)';
               statusEl.textContent = '\u2718 ' + (fetchErr || 'No active subscription found.');
               confirmBtn.disabled = false;
               confirmBtn.textContent = 'Confirm Cancellation';
@@ -3584,7 +3646,7 @@
             confirmBtn.textContent = 'Cancelling...';
             mutCancelSub(subscriptionId, (data, cancelErr) => {
               if (cancelErr) {
-                statusEl.style.color = '#fca5a5';
+                statusEl.style.color = 'var(--sb-danger)';
                 statusEl.textContent = '\u2718 ' + cancelErr;
                 confirmBtn.disabled = false;
                 confirmBtn.textContent = 'Confirm Cancellation';
@@ -3593,20 +3655,13 @@
               statusEl.style.color = 'var(--sb-text-muted)';
               statusEl.textContent = 'Posting comment...';
               mutPostComment(user.id, 'Subscription Cancelled', () => {
-                statusEl.style.color = '#6ee7b7';
+                statusEl.style.color = 'var(--sb-success-soft)';
                 statusEl.textContent = '\u2714 Subscription cancelled.';
                 confirmBtn.textContent = '\u2714 Done';
                 // Update cache so reopening the panel sees it as already cancelled
                 if (cachedCustomerCtx?.user) {
                   if (!cachedCustomerCtx.user.subscription) cachedCustomerCtx.user.subscription = {};
                   cachedCustomerCtx.user.subscription.status = 'Cancelled';
-                }
-                // Disable the toolbar button for this session
-                const cancelToolbarBtn = document.getElementById('sb-cancel-btn');
-                if (cancelToolbarBtn) {
-                  cancelToolbarBtn.disabled = true;
-                  cancelToolbarBtn.style.opacity = '0.4';
-                  cancelToolbarBtn.style.cursor = 'not-allowed';
                 }
                 setTimeout(() => removePanel('sb-cancel-panel'), 2000);
               });
@@ -3623,15 +3678,15 @@
 
         const delPmBtn = document.createElement('button');
         delPmBtn.textContent = '🗑 Delete Payment Methods';
-        delPmBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #dc2626;background:transparent;
-          color:#fca5a5;font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
+        delPmBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid var(--sb-danger-border);background:transparent;
+          color:var(--sb-danger);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
         delPmBtn.onmouseenter = () => delPmBtn.style.background = 'rgba(220,38,38,0.1)';
         delPmBtn.onmouseleave = () => delPmBtn.style.background = 'transparent';
         delPmBtn.onclick = () => {
           const { overlay, box } = createModal({ id: 'sb-del-pm-overlay', title: '🗑 Delete All Payment Methods', width: 320 });
 
           const warnEl = document.createElement('div');
-          warnEl.style.cssText = 'background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.3);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:#fca5a5;line-height:1.6;';
+          warnEl.style.cssText = 'background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.3);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:var(--sb-danger);line-height:1.6;';
           warnEl.innerHTML = `This will permanently remove <strong>all stored payment methods</strong> for:<br><br>
             <span style="color:var(--sb-text);font-weight:600;">${name}</span><br>
             <span style="color:var(--sb-text-muted);">${user.email}</span><br><br>
@@ -3643,7 +3698,7 @@
 
           box.appendChild(makeDialogButtons({
             confirmLabel: 'Delete All',
-            confirmColor: '#dc2626',
+            confirmColor: 'var(--sb-danger-border)',
             onCancel: () => overlay.remove(),
             onConfirm: (cBtn) => {
               cBtn.disabled = true;
@@ -3654,19 +3709,19 @@
                   const respErr = data?.paymentMethodDeleteAll?.error;
                   const errMsg = err || respErr?.message || respErr?.serverErrorMessage;
                   if (errMsg) {
-                    pmStatus.style.color = '#fca5a5';
+                    pmStatus.style.color = 'var(--sb-danger)';
                     pmStatus.textContent = '\u2718 ' + errMsg;
                     cBtn.disabled = false;
                     cBtn.textContent = 'Delete All';
                     return;
                   }
-                  pmStatus.style.color = '#6ee7b7';
+                  pmStatus.style.color = 'var(--sb-success-soft)';
                   pmStatus.textContent = '\u2714 All payment methods deleted.';
                   cBtn.textContent = '\u2714 Done';
                   delPmBtn.disabled = true;
                   delPmBtn.textContent = '\u2714 Payment Methods Deleted';
-                  delPmBtn.style.color = '#6ee7b7';
-                  delPmBtn.style.borderColor = '#6ee7b7';
+                  delPmBtn.style.color = 'var(--sb-success-soft)';
+                  delPmBtn.style.borderColor = 'var(--sb-success-soft)';
                   delPmBtn.style.cursor = 'default';
                   mutPostComment(user.id, 'Billing method removed', () => {});
                   setTimeout(() => overlay.remove(), 1800);
@@ -3681,14 +3736,14 @@
         const delAccBtn = document.createElement('button');
         delAccBtn.textContent = '⛔ Delete Account';
         delAccBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #991b1b;background:transparent;
-          color:#fca5a5;font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;margin-top:6px;`;
+          color:var(--sb-danger);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;margin-top:6px;`;
         delAccBtn.onmouseenter = () => delAccBtn.style.background = 'rgba(153,27,27,0.15)';
         delAccBtn.onmouseleave = () => delAccBtn.style.background = 'transparent';
         delAccBtn.onclick = () => {
           const { overlay, box } = createModal({ id: 'sb-del-acc-overlay', title: '⛔ Delete Account', width: 320 });
 
           const warnEl = document.createElement('div');
-          warnEl.style.cssText = 'background:rgba(153,27,27,0.15);border:1px solid rgba(153,27,27,0.4);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:#fca5a5;line-height:1.6;';
+          warnEl.style.cssText = 'background:rgba(153,27,27,0.15);border:1px solid rgba(153,27,27,0.4);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:var(--sb-danger);line-height:1.6;';
           warnEl.innerHTML = `This will:<br>
             <span style="color:var(--sb-text);">1.</span> Remove all payment methods<br>
             <span style="color:var(--sb-text);">2.</span> Disable the account email<br><br>
@@ -3725,19 +3780,19 @@
                       const respErr = emailData?.userChangeEmail?.error;
                       const errMsg = emailErr || respErr?.message;
                       if (errMsg) {
-                        accStatus.style.color = '#fca5a5';
+                        accStatus.style.color = 'var(--sb-danger)';
                         accStatus.textContent = '\u2718 ' + errMsg;
                         cBtn.disabled = false;
                         cBtn.textContent = 'Delete Account';
                         return;
                       }
-                      accStatus.style.color = '#6ee7b7';
+                      accStatus.style.color = 'var(--sb-success-soft)';
                       accStatus.textContent = '\u2714 Account deleted.';
                       cBtn.textContent = '\u2714 Done';
                       delAccBtn.disabled = true;
                       delAccBtn.textContent = '\u2714 Account Deleted';
-                      delAccBtn.style.color = '#6ee7b7';
-                      delAccBtn.style.borderColor = '#6ee7b7';
+                      delAccBtn.style.color = 'var(--sb-success-soft)';
+                      delAccBtn.style.borderColor = 'var(--sb-success-soft)';
                       delAccBtn.style.cursor = 'default';
                       mutPostComment(user.id, 'Account deleted', () => {});
                       setTimeout(() => overlay.remove(), 1800);
@@ -3763,8 +3818,8 @@
         fraudBtn._currentStatus = cachedFraudStatus;
         if (cachedFraudStatus === 'DECLINE') {
           fraudBtn.textContent = '✔ Blocklisted (Fraud)';
-          fraudBtn.style.color = '#ef4444';
-          fraudBtn.style.borderColor = '#ef4444';
+          fraudBtn.style.color = 'var(--sb-danger-strong)';
+          fraudBtn.style.borderColor = 'var(--sb-danger-strong)';
         }
 
         fraudBtn.onclick = () => {
@@ -3796,7 +3851,7 @@
 
           const btns = makeDialogButtons({
             confirmLabel: isAdding ? 'Blocklist' : 'Remove',
-            confirmColor: isAdding ? '#dc2626' : '#059669',
+            confirmColor: isAdding ? 'var(--sb-danger-border)' : '#059669',
             onCancel: () => overlay.remove(),
             onConfirm: (confirmBtn, cancelBtn) => {
               confirmBtn.disabled = true; cancelBtn.disabled = true;
@@ -3810,7 +3865,7 @@
                   const respErr = data?.userSetFraudStatus?.error;
                   const errMsg = err || respErr?.message;
                   if (errMsg) {
-                    dlgStatus.style.color = '#fca5a5';
+                    dlgStatus.style.color = 'var(--sb-danger)';
                     dlgStatus.textContent = '\u2718 ' + errMsg;
                     confirmBtn.disabled = false; cancelBtn.disabled = false;
                     confirmBtn.textContent = isAdding ? 'Blocklist' : 'Remove';
@@ -3826,15 +3881,15 @@
                     fraudBtn._currentStatus = newStatus;
                     if (newStatus === 'DECLINE') {
                       fraudBtn.textContent = '✔ Blocklisted (Fraud)';
-                      fraudBtn.style.color = '#ef4444';
-                      fraudBtn.style.borderColor = '#ef4444';
+                      fraudBtn.style.color = 'var(--sb-danger-strong)';
+                      fraudBtn.style.borderColor = 'var(--sb-danger-strong)';
                     } else {
                       fraudBtn.textContent = '🚫 Blocklist (Fraud)';
                       fraudBtn.style.color = '#c4b5fd';
                       fraudBtn.style.borderColor = '#7c3aed';
                     }
                     fraudBtn.disabled = false;
-                    dlgStatus.style.color = '#6ee7b7';
+                    dlgStatus.style.color = 'var(--sb-success-soft)';
                     dlgStatus.textContent = '✔ Done!';
                     setTimeout(() => overlay.remove(), 1200);
                   });
@@ -3936,7 +3991,7 @@
             if (li.refundedAmount !== null && li.refundedAmount !== undefined) {
               const liRefTag = document.createElement('span');
               const fullyRefunded = li.refundedAmount >= (li.total || li.price || 0);
-              liRefTag.style.cssText = 'font-size:var(--sb-fs-10);font-weight:600;color:' + (fullyRefunded ? '#6ee7b7' : '#f59e0b') + ';';
+              liRefTag.style.cssText = 'font-size:var(--sb-fs-10);font-weight:600;color:' + (fullyRefunded ? 'var(--sb-success-soft)' : 'var(--sb-warning-strong)') + ';';
               liRefTag.textContent = fullyRefunded ? '\u21A9 refunded' : '\u21A9 partial';
               liRight.appendChild(liRefTag);
             }
@@ -3971,7 +4026,7 @@
         // Already refunded warning
         if (alreadyRefunded || hasRefunds) {
           const warnEl = document.createElement('div');
-          warnEl.style.cssText = 'font-size:var(--sb-fs-11);color:#f59e0b;margin-bottom:8px;';
+          warnEl.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-warning-strong);margin-bottom:8px;';
           warnEl.textContent = alreadyRefunded
             ? '⚠ Partially refunded: ' + fmtMoney(Math.round(charge.refundAmount * 100), currency) + ' already returned'
             : '⚠ Refund records exist for this charge';
@@ -4013,7 +4068,7 @@
       const refundTotalInner = document.createElement('div');
       refundTotalInner.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
       const refundTotalLabel = document.createElement('span');
-      refundTotalLabel.style.cssText = 'font-size:var(--sb-fs-12);color:#6ee7b7;font-weight:700;';
+      refundTotalLabel.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-success-soft);font-weight:700;';
       const refundTotalCopy = makeCopyBtn(() => {
         const cur = result.all?.[0]?.charge?.cashbirdDetails?.invoice?.lineItems?.[0]?.currency || 'USD';
         return fmtMoney(_totalRefundedCents, cur);
@@ -4041,7 +4096,7 @@
 
   // ── Confirm Dialog (generic) ──────────────────────────────────────────────
 
-  function showConfirmDialog({ title, lines, confirmLabel, confirmColor = '#dc2626', onConfirm }) {
+  function showConfirmDialog({ title, lines, confirmLabel, confirmColor = 'var(--sb-danger-border)', onConfirm }) {
     const { overlay, box } = createModal({ id: 'sb-confirm-dialog', title, width: 360 });
 
     lines.forEach(line => {
@@ -4052,7 +4107,7 @@
     });
 
     const warn = document.createElement('div');
-    warn.style.cssText = 'font-size:var(--sb-fs-12);color:#fca5a5;margin-top:10px;margin-bottom:14px;';
+    warn.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-danger);margin-top:10px;margin-bottom:14px;';
     warn.textContent = 'This cannot be undone.';
     box.appendChild(warn);
 
@@ -4110,13 +4165,13 @@
     // Buttons
     const btns = makeDialogButtons({
       confirmLabel: 'Cancel Order',
-      confirmColor: '#dc2626',
+      confirmColor: 'var(--sb-danger-border)',
       onCancel: () => overlay.remove(),
       onConfirm: (confirmBtn, cancelBtn) => {
         const isOther = select.value === '__OTHER__';
         const otherNote = otherTa.value.trim();
         if (isOther && !otherNote) {
-          statusEl.style.color = '#fca5a5';
+          statusEl.style.color = 'var(--sb-danger)';
           statusEl.textContent = '✘ Please enter a custom comment';
           otherTa.focus();
           return;
@@ -4129,7 +4184,7 @@
 
         mutCancelOrder(order.id, (data, err) => {
           if (err) {
-            statusEl.style.color = '#fca5a5';
+            statusEl.style.color = 'var(--sb-danger)';
             statusEl.textContent = '✘ ' + err;
             confirmBtn.disabled = false; cancelBtn.disabled = false;
             select.disabled = false; otherTa.disabled = false;
@@ -4146,13 +4201,13 @@
           const comment = 'Cancelled ' + mLabel + ' order, ' + reasonText;
 
           mutPostComment(user.id, comment, () => {
-            statusEl.style.color = '#6ee7b7';
+            statusEl.style.color = 'var(--sb-success-soft)';
             statusEl.textContent = '✔ Done!';
             confirmBtn.textContent = '✔ Done';
             triggerBtn.disabled = true;
             triggerBtn.textContent = '✔ Cancelled';
-            triggerBtn.style.color = '#6ee7b7';
-            triggerBtn.style.borderColor = '#6ee7b7';
+            triggerBtn.style.color = 'var(--sb-success-soft)';
+            triggerBtn.style.borderColor = 'var(--sb-success-soft)';
             setTimeout(() => overlay.remove(), 1800);
           });
         });
@@ -4195,7 +4250,7 @@
     const existingRefunds = charge?.cashbirdDetails?.invoice?.refunds || [];
     if (existingRefunds.length) {
       const refWarn = document.createElement('div');
-      refWarn.style.cssText = 'background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:var(--sb-fs-11);color:#f59e0b;line-height:1.6;';
+      refWarn.style.cssText = 'background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:var(--sb-fs-11);color:var(--sb-warning-strong);line-height:1.6;';
       const refundLines = existingRefunds.map(r => {
         const amt = fmtMoney(r.amount, currency);
         const status = r.status === 'TRACKING_REFUND_IN_PROCESS' ? 'in progress' : (r.status || '').toLowerCase().replace(/_/g,' ');
@@ -4215,7 +4270,7 @@
       refundedItems.forEach(li => {
         const row = document.createElement('div');
         const fullyRefunded = li.refundedAmount >= li.total;
-        row.style.color = fullyRefunded ? '#6ee7b7' : '#f59e0b';
+        row.style.color = fullyRefunded ? 'var(--sb-success-soft)' : 'var(--sb-warning-strong)';
         row.textContent = (fullyRefunded ? '\u2714' : '\u21A9') + ' ' + (li.description || li.type) + ': ' + fmtMoney(li.refundedAmount, currency) + ' refunded';
         liWarn.appendChild(row);
       });
@@ -4230,7 +4285,7 @@
     box.appendChild(reasonSel);
 
     const warn = document.createElement('div');
-    warn.style.cssText = 'font-size:var(--sb-fs-12);color:#fca5a5;margin-bottom:14px;line-height:1.5;';
+    warn.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-danger);margin-bottom:14px;line-height:1.5;';
     warn.textContent = 'This will refund the payment to the customer. This cannot be undone.';
     box.appendChild(warn);
 
@@ -4255,7 +4310,7 @@
         const doRefund = () => {
           const onResult = (data, err) => {
             if (err) {
-              statusEl.style.color = '#fca5a5';
+              statusEl.style.color = 'var(--sb-danger)';
               statusEl.textContent = '\u2718 ' + err;
               confirmBtn.disabled = false;
               cancelBtn.disabled = false;
@@ -4276,13 +4331,13 @@
             const commentText = 'Cancelled & Refunded ' + refMonthLabel + ' order';
 
             const afterComment = () => {
-              statusEl.style.color = '#6ee7b7';
+              statusEl.style.color = 'var(--sb-success-soft)';
               statusEl.textContent = '\u2714 Refunded!';
               confirmBtn.textContent = '\u2714 Done';
               refBtn.disabled = true;
               refBtn.textContent = '\u2714 Refunded';
               refBtn.style.background = 'rgba(110,231,183,0.15)';
-              refBtn.style.color = '#6ee7b7';
+              refBtn.style.color = 'var(--sb-success-soft)';
               refBtn.style.cursor = 'not-allowed';
               setTimeout(() => overlay.remove(), 1800);
             };
@@ -4324,7 +4379,7 @@
           statusEl.textContent = 'Cancelling order...';
           mutCancelOrder(orderId, reason, (data, cancelErr) => {
             if (cancelErr) {
-              statusEl.style.color = '#fca5a5';
+              statusEl.style.color = 'var(--sb-danger)';
               statusEl.textContent = '✘ Cancel failed: ' + cancelErr;
               confirmBtn.disabled = false; cancelBtn.disabled = false;
               reasonSel.disabled = false;
@@ -4375,7 +4430,7 @@
     wrap.style.cssText = 'margin-top:10px;';
 
     const infoEl = document.createElement('div');
-    infoEl.style.cssText = 'display:none;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:var(--sb-fs-12);color:#f59e0b;line-height:1.6;';
+    infoEl.style.cssText = 'display:none;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:var(--sb-fs-12);color:var(--sb-warning-strong);line-height:1.6;';
     wrap.appendChild(infoEl);
 
     const btnRow = document.createElement('div');
@@ -4384,9 +4439,9 @@
 
     const billBtn = document.createElement('button');
     billBtn.textContent = '💳 Bill Upcharge';
-    billBtn.style.cssText = 'flex:1;padding:7px;border-radius:6px;border:none;background:#f59e0b;color:#000;font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;';
+    billBtn.style.cssText = 'flex:1;padding:7px;border-radius:6px;border:none;background:var(--sb-warning-strong);color:#000;font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;';
     billBtn.onmouseenter = () => billBtn.style.background = '#d97706';
-    billBtn.onmouseleave = () => billBtn.style.background = '#f59e0b';
+    billBtn.onmouseleave = () => billBtn.style.background = 'var(--sb-warning-strong)';
     btnRow.appendChild(billBtn);
 
     const skipBtn = document.createElement('button');
@@ -4445,7 +4500,7 @@
         const pi = item.product?.productInfo || item.productInfo;
         const up = pi?.upchargePrice || 0;
         if (up > 0) {
-          detailsHtml += `<div>${pi.name} by ${pi.brand} — <span style="color:#f59e0b;font-weight:600;">+$${up}</span></div>`;
+          detailsHtml += `<div>${pi.name} by ${pi.brand} — <span style="color:var(--sb-warning-strong);font-weight:600;">+$${up}</span></div>`;
         }
       });
       detailsHtml += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--sb-control-bg);font-weight:700;font-size:var(--sb-fs-13);color:var(--sb-text);">Total: $${total}</div>`;
@@ -4457,7 +4512,7 @@
 
       box.appendChild(makeDialogButtons({
         confirmLabel: 'Charge $' + total,
-        confirmColor: '#f59e0b',
+        confirmColor: 'var(--sb-warning-strong)',
         onCancel: () => overlay.remove(),
         onConfirm: (cBtn, cancelBtn) => {
           cBtn.disabled = true;
@@ -4471,7 +4526,7 @@
               const respErr = data?.charge?.error;
               const errMsg = err || respErr?.message;
               if (errMsg) {
-                chargeStatus.style.color = '#fca5a5';
+                chargeStatus.style.color = 'var(--sb-danger)';
                 chargeStatus.textContent = '\u2718 ' + errMsg;
                 cBtn.disabled = false;
                 cancelBtn.disabled = false;
@@ -4482,16 +4537,16 @@
               const state = data?.charge?.data?.state || 'UNKNOWN';
               const paid = data?.charge?.data?.paid;
               if (state === 'PAID') {
-                chargeStatus.style.color = '#6ee7b7';
+                chargeStatus.style.color = 'var(--sb-success-soft)';
                 chargeStatus.textContent = '\u2714 Charged successfully' + (paid ? ' — $' + (paid / 100).toFixed(2) + ' (incl. tax)' : '');
                 cBtn.textContent = '\u2714 Done';
                 _upchargeCleared = true;
-                statusEl.style.color = '#6ee7b7';
+                statusEl.style.color = 'var(--sb-success-soft)';
                 statusEl.textContent = '\u2714 Upcharge billed — $' + total;
                 refresh();
                 setTimeout(() => overlay.remove(), 1800);
               } else {
-                chargeStatus.style.color = '#fca5a5';
+                chargeStatus.style.color = 'var(--sb-danger)';
                 chargeStatus.textContent = '\u2718 Charge state: ' + state;
                 cBtn.disabled = false;
                 cancelBtn.disabled = false;
@@ -4572,21 +4627,21 @@
           variables: { input: { name: q, sections: ['Subscription', 'Extras', 'AddonSubscription'], statuses: ['LIVE', 'OUT_OF_STOCK', 'NOT_AVAILABLE_FOR_NEW_ORDERS'] } },
         }),
         onload(res) {
-          if (res.status === 401) { handle401(); resultsEl.innerHTML = '<div style="color:#fca5a5;">Sign in required.</div>'; return; }
-          if (res.status === 403) { handle403(); resultsEl.innerHTML = '<div style="color:#fca5a5;">CRM captcha required.</div>'; return; }
+          if (res.status === 401) { handle401(); resultsEl.innerHTML = '<div style="color:var(--sb-danger);">Sign in required.</div>'; return; }
+          if (res.status === 403) { handle403(); resultsEl.innerHTML = '<div style="color:var(--sb-danger);">CRM captcha required.</div>'; return; }
           try {
             const json = JSON.parse(res.responseText);
             console.log('[BirdsEye] Product search parsed:', json?.data?.productSuggestion?.data?.length, 'results, error:', json?.data?.productSuggestion?.error);
             const products = json?.data?.productSuggestion?.data || [];
             const err = json?.data?.productSuggestion?.error?.message;
-            if (err) { resultsEl.innerHTML = `<div style="color:#fca5a5;">${err}</div>`; return; }
+            if (err) { resultsEl.innerHTML = `<div style="color:var(--sb-danger);">${err}</div>`; return; }
             if (!products.length) { resultsEl.innerHTML = '<div style="color:var(--sb-text-muted);font-size:var(--sb-fs-12);">No products found.</div>'; return; }
             renderProductResults(products);
           } catch(e) {
-            resultsEl.innerHTML = '<div style="color:#fca5a5;">Parse error.</div>';
+            resultsEl.innerHTML = '<div style="color:var(--sb-danger);">Parse error.</div>';
           }
         },
-        onerror() { resultsEl.innerHTML = '<div style="color:#fca5a5;">Network error.</div>'; },
+        onerror() { resultsEl.innerHTML = '<div style="color:var(--sb-danger);">Network error.</div>'; },
       });
     }
 
@@ -4652,7 +4707,7 @@
           // Upcharge badge
           if (info.upchargePrice && info.upchargePrice > 0) {
             const upBadge = document.createElement('span');
-            upBadge.style.cssText = 'font-size:var(--sb-fs-9);padding:1px 4px;border-radius:3px;background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.3);';
+            upBadge.style.cssText = 'font-size:var(--sb-fs-9);padding:1px 4px;border-radius:3px;background:rgba(245,158,11,0.15);color:var(--sb-warning-strong);border:1px solid rgba(245,158,11,0.3);';
             upBadge.textContent = '+$' + info.upchargePrice;
             tagsRow.appendChild(upBadge);
           }
@@ -4661,7 +4716,7 @@
           if (product.status && product.status !== 'LIVE') {
             const stockBadge = document.createElement('span');
             const stockLabel = product.status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
-            stockBadge.style.cssText = 'font-size:var(--sb-fs-9);padding:1px 4px;border-radius:3px;background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);';
+            stockBadge.style.cssText = 'font-size:var(--sb-fs-9);padding:1px 4px;border-radius:3px;background:rgba(239,68,68,0.15);color:var(--sb-danger-strong);border:1px solid rgba(239,68,68,0.3);';
             stockBadge.textContent = stockLabel;
             tagsRow.appendChild(stockBadge);
           }
@@ -4675,7 +4730,7 @@
           const addBtn = document.createElement('button');
           addBtn.textContent = '＋';
           addBtn.title = 'Add to replacement';
-          addBtn.style.cssText = 'padding:3px 8px;border-radius:4px;border:1px solid #6366f1;background:transparent;color:#a5b4fc;font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;flex-shrink:0;';
+          addBtn.style.cssText = 'padding:3px 8px;border-radius:4px;border:1px solid #6366f1;background:transparent;color:var(--sb-accent);font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;flex-shrink:0;';
           addBtn.onmouseenter = () => addBtn.style.background = 'rgba(99,102,241,0.15)';
           addBtn.onmouseleave = () => addBtn.style.background = 'transparent';
           addBtn.onclick = () => {
@@ -4686,14 +4741,14 @@
 
             const chk = document.createElement('input');
             chk.type = 'checkbox'; chk.checked = true;
-            chk.style.cssText = 'cursor:pointer;accent-color:#818cf8;flex-shrink:0;';
+            chk.style.cssText = 'cursor:pointer;accent-color:var(--sb-accent-strong);flex-shrink:0;';
             itemChecks.push({ item: fakeItem, chk, starterChk: null });
             chk.addEventListener('change', () => { if (onItemAdded) onItemAdded(); });
 
             const row = document.createElement('div');
             row.style.cssText = 'margin-bottom:6px;border-left:2px solid #6366f1;padding-left:6px;';
             const lbl = document.createElement('label');
-            lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-12);color:#a5b4fc;flex-wrap:wrap;';
+            lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-12);color:var(--sb-accent);flex-wrap:wrap;';
             lbl.appendChild(chk);
             lbl.appendChild(document.createTextNode(info.name + ' by ' + info.brand));
 
@@ -4706,7 +4761,7 @@
             }
 
             const addedTag = document.createElement('span');
-            addedTag.style.cssText = 'font-size:var(--sb-fs-10);padding:1px 5px;border-radius:3px;background:rgba(99,102,241,0.2);color:#a5b4fc;border:1px solid rgba(99,102,241,0.3);';
+            addedTag.style.cssText = 'font-size:var(--sb-fs-10);padding:1px 5px;border-radius:3px;background:rgba(99,102,241,0.2);color:var(--sb-accent);border:1px solid rgba(99,102,241,0.3);';
             addedTag.textContent = 'Added';
             lbl.appendChild(addedTag);
 
@@ -4714,8 +4769,8 @@
             itemsWrap.appendChild(row);
 
             addBtn.textContent = '✔';
-            addBtn.style.color = '#6ee7b7';
-            addBtn.style.borderColor = '#6ee7b7';
+            addBtn.style.color = 'var(--sb-success-soft)';
+            addBtn.style.borderColor = 'var(--sb-success-soft)';
             addBtn.disabled = true;
             if (onItemAdded) onItemAdded();
           };
@@ -4792,7 +4847,7 @@
       const isDrift = productType === 'CarFreshenerRefill';
       const stockStatus = item?.product?.status;
       const stockBadge = {
-        'OUT_OF_STOCK':              { text: 'Out of Stock',    color: '#ef4444' },
+        'OUT_OF_STOCK':              { text: 'Out of Stock',    color: 'var(--sb-danger-strong)' },
         'NOT_AVAILABLE_FOR_NEW_ORDERS': { text: 'Not Available', color: '#f97316' },
         'INTERNAL_USE':              { text: 'Internal Use',    color: '#eab308' },
       }[stockStatus];
@@ -4804,7 +4859,7 @@
       lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-12);color:var(--sb-text-secondary);flex-wrap:wrap;';
       const chk = document.createElement('input');
       chk.type = 'checkbox'; chk.checked = true;
-      chk.style.cssText = 'cursor:pointer;accent-color:#818cf8;flex-shrink:0;';
+      chk.style.cssText = 'cursor:pointer;accent-color:var(--sb-accent-strong);flex-shrink:0;';
       lbl.appendChild(chk);
       lbl.appendChild(document.createTextNode(name));
       if (stockBadge) {
@@ -4823,7 +4878,7 @@
         sLbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-11);color:var(--sb-text-muted);';
         starterChk = document.createElement('input');
         starterChk.type = 'checkbox'; starterChk.checked = true;
-        starterChk.style.cssText = 'cursor:pointer;accent-color:#818cf8;';
+        starterChk.style.cssText = 'cursor:pointer;accent-color:var(--sb-accent-strong);';
         sLbl.appendChild(starterChk);
         sLbl.appendChild(document.createTextNode('Starter Set'));
         starterRow.appendChild(sLbl);
@@ -4841,7 +4896,7 @@
     searchRow.style.cssText = 'margin-top:8px;';
     const searchProductBtn = document.createElement('button');
     searchProductBtn.textContent = '🔍 Search Product';
-    searchProductBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid #818cf8;background:transparent;color:#818cf8;font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;';
+    searchProductBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid var(--sb-accent-strong);background:transparent;color:var(--sb-accent-strong);font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;';
     searchProductBtn.onmouseenter = () => searchProductBtn.style.background = 'rgba(129,140,248,0.15)';
     searchProductBtn.onmouseleave = () => searchProductBtn.style.background = 'transparent';
     searchProductBtn.onclick = () => showProductSearchPanel(itemChecks, itemsWrap, () => upchargeUI.refresh());
@@ -4866,10 +4921,10 @@
       lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-12);color:var(--sb-text-secondary);';
       const chk = document.createElement('input');
       chk.type = 'checkbox'; chk.checked = defaultChecked;
-      chk.style.cssText = 'cursor:pointer;accent-color:#818cf8;';
+      chk.style.cssText = 'cursor:pointer;accent-color:var(--sb-accent-strong);';
       const warn = document.createElement('span');
       warn.textContent = '⚠';
-      warn.style.cssText = 'color:#f59e0b;font-size:var(--sb-fs-14);display:none;margin-left:2px;';
+      warn.style.cssText = 'color:var(--sb-warning-strong);font-size:var(--sb-fs-14);display:none;margin-left:2px;';
       lbl.appendChild(chk);
       lbl.appendChild(document.createTextNode(labelText));
       lbl.appendChild(warn);
@@ -4927,7 +4982,7 @@
         }));
 
       if (!selectedItems.length) {
-        statusEl.style.color = '#fca5a5';
+        statusEl.style.color = 'var(--sb-danger)';
         statusEl.textContent = 'Select at least one item.';
         return;
       }
@@ -4961,7 +5016,7 @@
         onload(res) {
           if (res.status === 401) {
             handle401();
-            statusEl.style.color = '#fca5a5';
+            statusEl.style.color = 'var(--sb-danger)';
             statusEl.textContent = '\u2718 Token expired — click 🔑 Token to update.';
             confirmBtn.disabled = false;
             confirmBtn.textContent = 'Confirm Replacement';
@@ -4969,7 +5024,7 @@
           }
           if (res.status === 403) {
             handle403();
-            statusEl.style.color = '#fca5a5';
+            statusEl.style.color = 'var(--sb-danger)';
             statusEl.textContent = '\u2718 CRM captcha required — open CRM in browser.';
             confirmBtn.disabled = false;
             confirmBtn.textContent = 'Confirm Replacement';
@@ -4979,7 +5034,7 @@
             const json = JSON.parse(res.responseText);
             const err = json?.data?.replacementSave?.error?.message;
             if (err) {
-              statusEl.style.color = '#fca5a5';
+              statusEl.style.color = 'var(--sb-danger)';
               statusEl.textContent = '\u2718 ' + err;
               confirmBtn.disabled = false;
               confirmBtn.textContent = 'Confirm Replacement';
@@ -5010,10 +5065,10 @@
                 { input: { userId: user.id, comment: commentText, zendeskUrl: window.location.href } },
                 (data, err) => {
                   if (err) {
-                    statusEl.style.color = '#f59e0b';
+                    statusEl.style.color = 'var(--sb-warning-strong)';
                     statusEl.textContent = '\u2714 Replacement created, but comment failed.';
                   } else {
-                    statusEl.style.color = '#6ee7b7';
+                    statusEl.style.color = 'var(--sb-success-soft)';
                     statusEl.textContent = '\u2714 Done!';
                   }
                   confirmBtn.textContent = '\u2714 Done';
@@ -5037,14 +5092,14 @@
               }
             });
           } catch(e) {
-            statusEl.style.color = '#fca5a5';
+            statusEl.style.color = 'var(--sb-danger)';
             statusEl.textContent = '\u2718 Unexpected error.';
             confirmBtn.disabled = false;
             confirmBtn.textContent = 'Confirm Replacement';
           }
         },
         onerror() {
-          statusEl.style.color = '#fca5a5';
+          statusEl.style.color = 'var(--sb-danger)';
           statusEl.textContent = '\u2718 Network error.';
           confirmBtn.disabled = false;
           confirmBtn.textContent = 'Confirm Replacement';
@@ -5100,20 +5155,20 @@
         setReactValue(nameField, name);
         await new Promise(r => setTimeout(r, 300));
         document.querySelector('button[data-kt="modalFooterBasic_buttonPrimary"]')?.click();
-        btn.textContent = '✔ Done'; btn.style.color = '#6ee7b7';
+        btn.textContent = '✔ Done'; btn.style.color = 'var(--sb-success-soft)';
       } else if (nameField && trimmed) {
         // Fallback: title-case the existing name (runs even if no CRM user / no token)
         setReactValue(nameField, toProperCase(trimmed));
         await new Promise(r => setTimeout(r, 300));
         document.querySelector('button[data-kt="modalFooterBasic_buttonPrimary"]')?.click();
-        btn.textContent = '✔ Cased'; btn.style.color = '#fcd34d';
+        btn.textContent = '✔ Cased'; btn.style.color = 'var(--sb-warning)';
       } else if (!getAccessToken() || _reauthRequired) {
         // No name to fall back on AND no working token — surface the auth issue
         document.querySelector('button[data-kt="modalFooterBasic_buttonCancel"]')?.click();
-        btn.textContent = '⚠ Sign in with Okta'; btn.style.color = '#fca5a5';
+        btn.textContent = '⚠ Sign in with Okta'; btn.style.color = 'var(--sb-danger)';
       } else {
         document.querySelector('button[data-kt="modalFooterBasic_buttonCancel"]')?.click();
-        btn.textContent = '✘ Not Found'; btn.style.color = '#fca5a5';
+        btn.textContent = '✘ Not Found'; btn.style.color = 'var(--sb-danger)';
       }
       setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; }, 2000);
     });
@@ -5263,7 +5318,7 @@
     const composer = getComposer();
     if (!composer) {
       const orig = btn.textContent;
-      btn.textContent = '✘ No editor'; btn.style.color = '#fca5a5';
+      btn.textContent = '✘ No editor'; btn.style.color = 'var(--sb-danger)';
       setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 2000);
       return;
     }
@@ -5272,7 +5327,7 @@
     const needed = FILL_VARIABLES.filter(v => text.includes('[' + v.key + ']'));
     if (!needed.length) {
       const orig = btn.textContent;
-      btn.textContent = '✘ No tokens'; btn.style.color = '#fca5a5';
+      btn.textContent = '✘ No tokens'; btn.style.color = 'var(--sb-danger)';
       setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 2000);
       return;
     }
@@ -5366,9 +5421,9 @@
 
             const count = fillComposer(replacements);
             const skipped = needed.length - replacements.length;
-            if (count === 0 && skipped > 0) return restore('✘ No data', '#fca5a5');
+            if (count === 0 && skipped > 0) return restore('✘ No data', 'var(--sb-danger)');
             const label = (skipped > 0 ? '⚠ Paste (missing)' : '📋 Paste now');
-            restore(label, '#6ee7b7');
+            restore(label, 'var(--sb-success-soft)');
           };
 
           if (needsCharges) {
@@ -5579,7 +5634,7 @@
       if (!user?.id) {
         const label = !getAccessToken() ? '⚠ Sign in with Okta' : '✘ No customer';
         btn.textContent = label;
-        btn.style.color = '#fca5a5';
+        btn.style.color = 'var(--sb-danger)';
         setTimeout(() => { btn.textContent = '🔗 Open Account'; btn.style.color = ''; }, 2000);
         return;
       }
@@ -5743,7 +5798,7 @@
 
     // Identity line: name · email · shipping address (above the tag groups)
     const idLine = document.createElement('div');
-    idLine.style.cssText = 'color:var(--sb-text-muted);';
+    idLine.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-13);';
     const _u  = cachedCustomerCtx?.user;
     const _sh = cachedCustomerCtx?._shippingAddress;
     const _idParts = [];
@@ -5783,13 +5838,13 @@
       statusLabel = 'Cancelled on ' + fmtDateTag(sub.subscriptionEndDate);
     }
     group1.appendChild(makeTag(statusLabel,
-      isActive ? '#6ee7b7' : '#fca5a5',
-      isActive ? 'rgba(110,231,183,0.1)' : 'rgba(252,165,165,0.1)',
-      isActive ? 'rgba(110,231,183,0.3)' : 'rgba(252,165,165,0.3)'
+      isActive ? 'var(--sb-success-soft)' : 'var(--sb-danger)',
+      isActive ? 'var(--sb-tag-success-bg)' : 'var(--sb-tag-danger-bg)',
+      isActive ? 'var(--sb-tag-success-border)' : 'var(--sb-tag-danger-border)'
     ));
 
     if (sub.cashbirdDetails?.data?.isAwaitCancellation) {
-      group1.appendChild(makeTag('Scheduled Cancellation', '#ef4444', 'rgba(239,68,68,0.15)', 'rgba(239,68,68,0.4)'));
+      group1.appendChild(makeTag('Scheduled Cancellation', 'var(--sb-danger-strong)', 'var(--sb-tag-danger-bg)', 'var(--sb-tag-danger-border)'));
     }
 
     const bdDate = sub.nextBillingDate || sub.cashbirdDetails?.data?.nextBillingDate;
@@ -5802,7 +5857,7 @@
         const mon = new Date(bdDate).toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }).toUpperCase();
         bdLabel = 'BD: ' + mon + ' ' + bdDay;
       }
-      group1.appendChild(makeTag(bdLabel, 'var(--sb-text-muted)', 'rgba(148,163,184,0.08)', 'rgba(148,163,184,0.2)'));
+      group1.appendChild(makeTag(bdLabel, 'var(--sb-text-muted)', 'var(--sb-tag-muted-bg)', 'var(--sb-tag-muted-border)'));
     }
 
     // Gender tag from cache
@@ -5811,9 +5866,9 @@
       const isMale = cachedGender === 'MALE';
       const gTag = makeTag(
         isMale ? '♂ Colognes' : '♀ Perfumes',
-        isMale ? '#60a5fa' : '#f472b6',
-        isMale ? 'rgba(96,165,250,0.1)' : 'rgba(244,114,182,0.1)',
-        isMale ? 'rgba(96,165,250,0.3)' : 'rgba(244,114,182,0.3)'
+        isMale ? 'var(--sb-info)' : 'var(--sb-tag-pink-fg)',
+        isMale ? 'var(--sb-tag-info-bg)' : 'var(--sb-tag-pink-bg)',
+        isMale ? 'var(--sb-tag-info-border)' : 'var(--sb-tag-pink-border)'
       );
       gTag.dataset.tag = 'gender';
       group1.appendChild(gTag);
@@ -5826,13 +5881,13 @@
 
     if (sub.planName) {
       const planLabel = PLAN_LABELS[sub.planName] || sub.planName.replace(/_/g, ' ').toLowerCase();
-      group2.appendChild(makeTag(planLabel, '#c4b5fd', 'rgba(167,139,250,0.1)', 'rgba(167,139,250,0.25)'));
+      group2.appendChild(makeTag(planLabel, 'var(--sb-tag-plan-fg)', 'var(--sb-tag-plan-bg)', 'var(--sb-tag-plan-border)'));
     }
 
     const remainingCredits = (sub.credits || []).filter(c => c.status === 'NEW').length;
     if (remainingCredits > 0) {
       const label = `🎟 ${remainingCredits} credit${remainingCredits === 1 ? '' : 's'}`;
-      group2.appendChild(makeTag(label, '#6ee7b7', 'rgba(110,231,183,0.1)', 'rgba(110,231,183,0.3)'));
+      group2.appendChild(makeTag(label, 'var(--sb-success-soft)', 'var(--sb-tag-success-bg)', 'var(--sb-tag-success-border)'));
     }
 
     const addOnLabels = {
@@ -5845,7 +5900,7 @@
     const addOns = sub.addOnSettings || {};
     Object.entries(addOnLabels).forEach(([key, label]) => {
       if (addOns[key]?.selected) {
-        group2.appendChild(makeTag(label, '#fcd34d', 'rgba(245,158,11,0.1)', 'rgba(245,158,11,0.25)'));
+        group2.appendChild(makeTag(label, 'var(--sb-warning)', 'var(--sb-tag-warning-bg)', 'var(--sb-tag-warning-border)'));
       }
     });
 
@@ -5858,15 +5913,15 @@
       const region  = (shipping.region  || '').trim().toUpperCase();
       const locationGroup = makeGroup();
       if (country === 'CA' || country === 'CAN' || country === 'CANADA') {
-        locationGroup.appendChild(makeTag('🍁 Canada', '#f59e0b', 'rgba(245,158,11,0.1)', 'rgba(245,158,11,0.25)'));
+        locationGroup.appendChild(makeTag('🍁 Canada', 'var(--sb-warning-strong)', 'var(--sb-tag-warning-bg)', 'var(--sb-tag-warning-border)'));
       } else if (country === 'GB' || country === 'UK' || country === 'UNITED KINGDOM') {
-        locationGroup.appendChild(makeTag('🇬🇧 UK', '#60a5fa', 'rgba(96,165,250,0.1)', 'rgba(96,165,250,0.25)'));
+        locationGroup.appendChild(makeTag('🇬🇧 UK', 'var(--sb-info)', 'var(--sb-tag-info-bg)', 'var(--sb-tag-info-border)'));
       } else if (['HI', 'HAWAII'].includes(region)) {
-        locationGroup.appendChild(makeTag('🌺 Hawaii', '#f472b6', 'rgba(244,114,182,0.1)', 'rgba(244,114,182,0.25)'));
+        locationGroup.appendChild(makeTag('🌺 Hawaii', 'var(--sb-tag-pink-fg)', 'var(--sb-tag-pink-bg)', 'var(--sb-tag-pink-border)'));
       } else if (['AK', 'ALASKA'].includes(region)) {
-        locationGroup.appendChild(makeTag('🏔 Alaska', 'var(--sb-text-muted)', 'rgba(148,163,184,0.1)', 'rgba(148,163,184,0.25)'));
+        locationGroup.appendChild(makeTag('🏔 Alaska', 'var(--sb-text-muted)', 'var(--sb-tag-muted-bg)', 'var(--sb-tag-muted-border)'));
       } else if (['PR', 'PUERTO RICO'].includes(region)) {
-        locationGroup.appendChild(makeTag('🌴 Puerto Rico', '#34d399', 'rgba(52,211,153,0.1)', 'rgba(52,211,153,0.25)'));
+        locationGroup.appendChild(makeTag('🌴 Puerto Rico', 'var(--sb-tag-emerald-fg)', 'var(--sb-tag-emerald-bg)', 'var(--sb-tag-emerald-border)'));
       }
       if (locationGroup.children.length) tagsRow.appendChild(locationGroup);
     }
@@ -5877,7 +5932,7 @@
     group3.style.display = 'none'; // hidden until a warning is added
 
     if (addressMatch === false) {
-      const addrTag = makeTag('⚠ Addr Updated', '#f59e0b', 'rgba(245,158,11,0.15)', 'rgba(245,158,11,0.3)');
+      const addrTag = makeTag('⚠ Addr Updated', 'var(--sb-warning-strong)', 'var(--sb-tag-warning-bg)', 'var(--sb-tag-warning-border)');
       if (orderAddrStr) addrTag.title = 'Last order shipped to: ' + orderAddrStr;
       group3.appendChild(addrTag);
       group3.style.display = '';
@@ -5964,7 +6019,7 @@
             if (userData.fraudInfo?.status === 'DECLINE') {
               const warnGroup = document.getElementById('sb-info-group-warnings');
               if (warnGroup) {
-                warnGroup.appendChild(makeTag('⚠ Fraud', '#ef4444', 'rgba(239,68,68,0.15)', 'rgba(239,68,68,0.4)'));
+                warnGroup.appendChild(makeTag('⚠ Fraud', 'var(--sb-danger-strong)', 'var(--sb-tag-danger-bg)', 'var(--sb-tag-danger-border)'));
                 warnGroup.style.display = '';
               }
             }
@@ -5983,7 +6038,7 @@
                   if (hasChargeback) {
                     const warnGroup = document.getElementById('sb-info-group-warnings');
                     if (warnGroup && !warnGroup.querySelector('[data-tag="chargeback"]')) {
-                      const t = makeTag('⚠ Chargeback', '#ef4444', 'rgba(239,68,68,0.15)', 'rgba(239,68,68,0.4)');
+                      const t = makeTag('⚠ Chargeback', 'var(--sb-danger-strong)', 'var(--sb-tag-danger-bg)', 'var(--sb-tag-danger-border)');
                       t.dataset.tag = 'chargeback';
                       warnGroup.appendChild(t);
                       warnGroup.style.display = '';
