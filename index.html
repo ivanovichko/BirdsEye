@@ -440,13 +440,8 @@
     <h3>Installing BirdsEye</h3>
     <div class="step" id="step1">
       <span class="step-indicator">1</span>
-      <span>Token Helper</span>
-      <button class="step-action" id="step1Action">Install</button>
-    </div>
-    <div class="step" id="step2">
-      <span class="step-indicator">2</span>
       <span>BirdsEye core</span>
-      <button class="step-action" id="step2Action" disabled>Install</button>
+      <button class="step-action" id="step1Action">Install</button>
     </div>
   </div>
 
@@ -459,41 +454,25 @@
 
 <script>
 /* =========================================================================
-   INSTALL FLOW — sequential Tampermonkey userscript install
+   INSTALL FLOW — single-step Tampermonkey userscript install
    ========================================================================= */
-const TOKEN_HELPER_URL = 'https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/BirdsEye%20-%20Token%20Helper.user.js';
-const BIRDSEYE_URL     = 'https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/BirdsEye.user.js';
+const BIRDSEYE_URL = 'https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/BirdsEye.user.js';
 
 const installBtn   = document.getElementById('installBtn');
 const progressEl   = document.getElementById('installProgress');
 const step1        = document.getElementById('step1');
-const step2        = document.getElementById('step2');
 const step1Action  = document.getElementById('step1Action');
-const step2Action  = document.getElementById('step2Action');
 
 installBtn.addEventListener('click', () => {
   progressEl.classList.add('active');
   progressEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-
-  // Start at step 1
   step1.classList.add('active');
-  step2Action.disabled = true;
 });
 
 step1Action.addEventListener('click', () => {
-  window.open(TOKEN_HELPER_URL, '_blank', 'noopener');
-  // Mark step 1 done visually (indicator only), unlock step 2
+  window.open(BIRDSEYE_URL, '_blank', 'noopener');
   step1.classList.remove('active');
   step1.classList.add('done');
-
-  step2.classList.add('active');
-  step2Action.disabled = false;
-});
-
-step2Action.addEventListener('click', () => {
-  window.open(BIRDSEYE_URL, '_blank', 'noopener');
-  step2.classList.remove('active');
-  step2.classList.add('done');
 });
 
 /* =========================================================================
