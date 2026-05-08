@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.10.0
+// @version      8.10.1
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -101,10 +101,10 @@
         if (!_statusEl) {
           _statusEl = document.createElement('div');
           _statusEl.id = 'sb-okta-status';
-          _statusEl.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:#0f172a;color:#e2e8f0;font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;font-size:var(--sb-fs-14);';
+          _statusEl.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:var(--sb-bg-deep);color:var(--sb-text);font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;font-size:var(--sb-fs-14);';
           (document.body || document.documentElement).appendChild(_statusEl);
         }
-        _statusEl.style.color = color || '#94a3b8';
+        _statusEl.style.color = color || 'var(--sb-text-muted)';
         _statusEl.textContent = text;
       } catch(e) {}
     };
@@ -155,8 +155,13 @@
               id_token:      json.id_token || null,
             });
             clearPendingAuth();
-            showStatus('Signed in. You can close this window.', '#6ee7b7');
-            setTimeout(() => { try { window.close(); } catch(e) {} }, 800);
+            // Warm up DataDome by navigating to CRM root. Opener watches for tokens
+            // landing in storage and closes this popup after the warm-up window.
+            showStatus('Warming up CRM session…', '#fcd34d');
+            try { location.replace('https://crm.scentbird.com/'); } catch(e) {
+              // Fallback: if navigation fails, close ourselves.
+              setTimeout(() => { try { window.close(); } catch(_) {} }, 800);
+            }
           } else {
             clearPendingAuth();
             showStatus('Token exchange failed: ' + (json.error_description || json.error || res.status), '#fca5a5');
@@ -187,7 +192,35 @@
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // GLOBAL CSS — font-size variables. Single knob: --sb-fs-scale.
+  // SETTINGS — font scale, window scale, theme. Persisted in GM_setValue.
+  // ══════════════════════════════════════════════════════════════════════════
+  const SETTINGS_KEY = 'birdseye_settings';
+  const SETTINGS_DEFAULTS = { fontScale: 1.15, modalScale: 1.0, theme: 'dark' };
+  let MODAL_SCALE = SETTINGS_DEFAULTS.modalScale;   // mirror; createPanel/Modal read from this
+
+  function getSettings() {
+    try {
+      const raw = JSON.parse(GM_getValue(SETTINGS_KEY, '') || 'null');
+      return Object.assign({}, SETTINGS_DEFAULTS, raw || {});
+    } catch(e) { return Object.assign({}, SETTINGS_DEFAULTS); }
+  }
+  function setSettings(patch) {
+    const merged = Object.assign(getSettings(), patch);
+    GM_setValue(SETTINGS_KEY, JSON.stringify(merged));
+    applySettings(merged);
+    return merged;
+  }
+  function applySettings(s) {
+    const root = document.documentElement;
+    root.style.setProperty('--sb-fs-scale',    String(s.fontScale));
+    root.style.setProperty('--sb-modal-scale', String(s.modalScale));
+    root.dataset.theme = s.theme === 'light' ? 'light' : 'dark';
+    MODAL_SCALE = s.modalScale;
+  }
+  applySettings(getSettings());
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // GLOBAL CSS — font-size, modal-size, and theme color variables.
   // Custom properties bypass `all:initial` and inherit into panels.
   // ══════════════════════════════════════════════════════════════════════════
   (function injectStyles() {
@@ -203,6 +236,54 @@
         --sb-fs-12: calc(12px * var(--sb-fs-scale));
         --sb-fs-13: calc(13px * var(--sb-fs-scale));
         --sb-fs-14: calc(14px * var(--sb-fs-scale));
+
+        --sb-modal-scale: 1.0;
+
+        /* Surfaces */
+        --sb-bg-panel:           #1e1e2e;
+        --sb-bg-deep:            #0f172a;
+        --sb-bg-row:             #1a1a2e;
+        --sb-bg-row-replacement: #1a1530;
+        --sb-bg-input:           #2a2a3e;
+
+        /* Text */
+        --sb-text:           #e2e8f0;
+        --sb-text-secondary: #cbd5e1;
+        --sb-text-muted:     #94a3b8;
+        --sb-text-dim:       #64748b;
+
+        /* Borders */
+        --sb-border:      rgba(255,255,255,0.1);
+        --sb-border-soft: rgba(255,255,255,0.06);
+
+        /* Overlays — used for button bg, hover, dividers */
+        --sb-control-bg:  rgba(255,255,255,0.08);
+        --sb-hover:       rgba(255,255,255,0.15);
+
+        /* Shadow */
+        --sb-shadow: 0 12px 40px rgba(0,0,0,0.5);
+      }
+
+      /* Light theme — Kustomer-soft palette */
+      :root[data-theme="light"] {
+        --sb-bg-panel:           #ffffff;
+        --sb-bg-deep:            #f7f7fa;
+        --sb-bg-row:             #fafbfc;
+        --sb-bg-row-replacement: #f5f0ff;
+        --sb-bg-input:           #f7f7fa;
+
+        --sb-text:           #1f2937;
+        --sb-text-secondary: #475569;
+        --sb-text-muted:     #6b7280;
+        --sb-text-dim:       #9ca3af;
+
+        --sb-border:      #e5e7eb;
+        --sb-border-soft: #f1f5f9;
+
+        --sb-control-bg:  rgba(0,0,0,0.04);
+        --sb-hover:       rgba(0,0,0,0.06);
+
+        --sb-shadow: 0 12px 40px rgba(0,0,0,0.08);
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -272,7 +353,15 @@
    */
   function crmRequest(opts) {
     const send = (token, isRetry) => {
-      const headers = Object.assign({}, opts.headers || {});
+      // Mimic a real same-origin CRM request so DataDome doesn't gate the cross-origin
+      // call. Origin + Sec-Fetch-* must all match what a real CRM tab sends.
+      const headers = Object.assign({
+        'Origin':          'https://crm.scentbird.com',
+        'Referer':         'https://crm.scentbird.com/',
+        'Sec-Fetch-Site':  'same-origin',
+        'Sec-Fetch-Mode':  'cors',
+        'Sec-Fetch-Dest':  'empty',
+      }, opts.headers || {});
       if (token) headers['Authorization'] = 'Bearer ' + token;
       GM_xmlhttpRequest({
         method: opts.method || 'POST',
@@ -280,6 +369,9 @@
         headers,
         data:   opts.data,
         onload(res) {
+          if (res.status === 403) {
+            console.log('[BirdsEye] 403', opts.url, res.responseText?.substring(0, 200));
+          }
           if (res.status === 401 && !isRetry) {
             refreshTokens().then(
               (newToken) => send(newToken, true),
@@ -317,7 +409,23 @@
     const w = 500, h = 700;
     const left = (screen.width  - w) / 2;
     const top  = (screen.height - h) / 2;
-    window.open(authUrl, 'sb_okta_login', `width=${w},height=${h},left=${left},top=${top}`);
+    const popup = window.open(authUrl, 'sb_okta_login', `width=${w},height=${h},left=${left},top=${top}`);
+
+    // Watch GM_setValue for the token bundle to land. Once it does, the popup
+    // is on crm.scentbird.com warming up DataDome — give it 5s, then force-close.
+    const beforeId = getTokens()?.id_token || null;
+    const startedAt = Date.now();
+    const watcher = setInterval(() => {
+      if (!popup || popup.closed) { clearInterval(watcher); return; }
+      const cur = getTokens();
+      if (cur?.id_token && cur.id_token !== beforeId) {
+        clearInterval(watcher);
+        setTimeout(() => { try { popup.close(); } catch(e) {} refreshOktaButtonState(); }, 5000);
+      } else if (Date.now() - startedAt > 180000) {
+        // 3-minute safety: if user hasn't completed auth, stop polling.
+        clearInterval(watcher);
+      }
+    }, 500);
   }
 
   function refreshOktaButtonState() {
@@ -325,10 +433,11 @@
     if (!btn) return;
     const haveToken = !!getAccessToken();
     if (haveToken && _reauthRequired) _reauthRequired = false;   // popup login completed
-    const state = _captchaRequired ? 'captcha'
-                : !haveToken        ? 'signin'
-                : _reauthRequired   ? 'reauth'
-                                    : 'in';
+    const state = _captchaSolving  ? 'solving'
+                : _captchaRequired ? 'captcha'
+                : !haveToken       ? 'signin'
+                : _reauthRequired  ? 'reauth'
+                                   : 'in';
     if (btn.dataset.authState === state) return;
     btn.dataset.authState = state;
     if (state === 'in') {
@@ -336,12 +445,15 @@
       return;
     }
     btn.style.display = '';
-    if (state === 'captcha') {
+    if (state === 'solving') {
+      btn.textContent = '⏳ Solving challenge…';
+      btn.style.color = '#fcd34d';
+    } else if (state === 'captcha') {
       btn.textContent = '⚠ CRM Captcha';
       btn.style.color = '#f59e0b';
     } else {
       btn.textContent = '🔐 Sign in with Okta';
-      btn.style.color = state === 'reauth' ? '#fca5a5' : '#e2e8f0';
+      btn.style.color = state === 'reauth' ? '#fca5a5' : 'var(--sb-text)';
     }
   }
 
@@ -392,43 +504,63 @@
     refreshOktaButtonState();
   }
 
-  /** Opens crm.scentbird.com in a popup and auto-closes once a CRM probe stops 403'ing. */
+  /** Opens crm.scentbird.com in a popup and auto-closes once a CRM probe stops 403'ing.
+   *  Gives DataDome up to ~30s to complete its challenge before giving up. */
+  let _captchaSolving = false;
   function openCaptchaPopup() {
     const w = 500, h = 700;
     const left = (screen.width  - w) / 2;
     const top  = (screen.height - h) / 2;
     const popup = window.open('https://crm.scentbird.com/', 'sb_crm_captcha', `width=${w},height=${h},left=${left},top=${top}`);
 
-    const cleanup = () => {
-      _captchaRequired = false;
+    _captchaSolving = true;
+    refreshOktaButtonState();
+
+    let timedOut = false;
+    const cleanup = (resolved) => {
+      _captchaSolving = false;
+      if (resolved) _captchaRequired = false;
       refreshOktaButtonState();
     };
 
-    // Watch for manual close.
     const closeWatch = setInterval(() => {
       if (!popup || popup.closed) {
         clearInterval(closeWatch);
         clearInterval(probe);
-        cleanup();
+        clearTimeout(giveUp);
+        cleanup(false);   // user closed — leave _captchaRequired set so they can retry
       }
     }, 500);
 
-    // Probe CRM every 3s with a no-op GraphQL call. Non-403 status = captcha resolved.
-    const probe = setInterval(() => {
-      GM_xmlhttpRequest({
-        method: 'POST', url: GRAPHQL_URL,
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getAccessToken() },
-        data: JSON.stringify({ query: '{ __typename }' }),
-        onload(res) {
-          if (res.status !== 403) {
-            clearInterval(probe);
-            clearInterval(closeWatch);
-            try { popup?.close(); } catch(e) {}
-            cleanup();
-          }
-        },
-      });
-    }, 3000);
+    // Wait 5s before the first probe (DataDome JS challenge takes a beat to run).
+    let probe = null;
+    setTimeout(() => {
+      probe = setInterval(() => {
+        if (timedOut) return;
+        GM_xmlhttpRequest({
+          method: 'POST', url: GRAPHQL_URL,
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getAccessToken() },
+          data: JSON.stringify({ query: '{ __typename }' }),
+          onload(res) {
+            if (res.status !== 403) {
+              clearInterval(probe);
+              clearInterval(closeWatch);
+              clearTimeout(giveUp);
+              try { popup?.close(); } catch(e) {}
+              cleanup(true);
+            }
+          },
+        });
+      }, 3000);
+    }, 5000);
+
+    // 30s timeout: stop polling and revert toolbar; popup stays open for the user to interact.
+    const giveUp = setTimeout(() => {
+      timedOut = true;
+      if (probe) clearInterval(probe);
+      clearInterval(closeWatch);
+      cleanup(false);
+    }, 30000);
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -532,33 +664,35 @@
   }
 
   /** Modal dialog inside an overlay. Returns { overlay, box }. */
-  function createModal({ id, title, width = 360 }) {
+  function createModal({ id, title, width = 360, noScale = false }) {
     const overlay = createOverlay(id);
+    const scale = noScale ? 1 : MODAL_SCALE;
+    width = Math.round(width * scale);
     const box = document.createElement('div');
     box.style.cssText = `
-      background:#1e1e2e;border-radius:10px;padding:20px 24px;width:${width}px;
+      background:var(--sb-bg-panel);border-radius:10px;padding:20px 24px;width:${width}px;
       max-height:85vh;overflow-y:auto;
-      border:1px solid rgba(255,255,255,0.1);box-shadow:0 20px 60px rgba(0,0,0,0.7);
-      color:#e2e8f0;font-family:Arial,sans-serif;font-size:var(--sb-fs-14);box-sizing:border-box;
+      border:1px solid var(--sb-border);box-shadow:var(--sb-shadow);
+      color:var(--sb-text);font-family:Arial,sans-serif;font-size:var(--sb-fs-14);box-sizing:border-box;
     `;
     if (title) {
       const hdr = document.createElement('div');
       hdr.style.cssText = `
         position:sticky;top:-20px;z-index:5;
         margin:-20px -24px 12px;padding:14px 24px;
-        background:#1e1e2e;
+        background:var(--sb-bg-panel);
         display:flex;justify-content:space-between;align-items:center;
         font-weight:700;font-size:var(--sb-fs-14);
-        border-bottom:1px solid rgba(255,255,255,0.06);
+        border-bottom:1px solid var(--sb-border-soft);
       `;
       const span = document.createElement('span');
       span.textContent = title;
       hdr.appendChild(span);
       const xBtn = document.createElement('button');
       xBtn.textContent = 'Close \u2715';
-      xBtn.style.cssText = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#94a3b8;font-size:var(--sb-fs-11);font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
-      xBtn.onmouseenter = () => xBtn.style.background = 'rgba(255,255,255,0.15)';
-      xBtn.onmouseleave = () => xBtn.style.background = 'rgba(255,255,255,0.08)';
+      xBtn.style.cssText = 'background:var(--sb-control-bg);border:1px solid var(--sb-hover);color:var(--sb-text-muted);font-size:var(--sb-fs-11);font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
+      xBtn.onmouseenter = () => xBtn.style.background = 'var(--sb-hover)';
+      xBtn.onmouseleave = () => xBtn.style.background = 'var(--sb-control-bg)';
       xBtn.onclick = () => overlay.remove();
       hdr.appendChild(xBtn);
       box.appendChild(hdr);
@@ -568,9 +702,13 @@
   }
 
   /** Fixed-position floating panel. Returns panel element (already in DOM).
-   *  Options: centered (override right-anchored placement) and draggable (grab header to move). */
-  function createPanel({ id, title, width = 380, right = 20, maxHeight = 680, centered = false, draggable = false, onClose }) {
+   *  Options: centered (override right-anchored placement), draggable (grab header to move),
+   *  noScale (bypass MODAL_SCALE — for the settings panel). */
+  function createPanel({ id, title, width = 380, right = 20, maxHeight = 680, centered = false, draggable = false, noScale = false, onClose }) {
     removePanel(id);
+    const scale = noScale ? 1 : MODAL_SCALE;
+    width     = Math.round(width     * scale);
+    maxHeight = Math.round(maxHeight * scale);
     const panel = document.createElement('div');
     panel.id = id;
     const initLeft = centered ? Math.max(20, Math.floor((window.innerWidth  - width)         / 2)) : null;
@@ -580,25 +718,25 @@
       : `top:${initTop}px;right:${right}px;`;
     panel.style.cssText = `
       all:initial;position:fixed;${placement}width:${width}px;max-height:${maxHeight}px;
-      overflow-y:auto;background:#1e1e2e;color:#e2e8f0;font-family:Arial,sans-serif;
-      font-size:var(--sb-fs-13);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,0.5);
-      padding:14px;z-index:999999;border:1px solid rgba(255,255,255,0.1);box-sizing:border-box;
+      overflow-y:auto;background:var(--sb-bg-panel);color:var(--sb-text);font-family:Arial,sans-serif;
+      font-size:var(--sb-fs-13);border-radius:10px;box-shadow:var(--sb-shadow);
+      padding:14px;z-index:999999;border:1px solid var(--sb-border);box-sizing:border-box;
     `;
     const hdr = document.createElement('div');
     hdr.style.cssText = `
       position:sticky;top:-14px;z-index:5;
       margin:-14px -14px 10px;padding:10px 14px;
-      background:#1e1e2e;
+      background:var(--sb-bg-panel);
       display:flex;align-items:center;justify-content:space-between;
-      border-bottom:1px solid rgba(255,255,255,0.06);
+      border-bottom:1px solid var(--sb-border-soft);
       ${draggable ? 'cursor:grab;user-select:none;' : ''}
     `;
     hdr.innerHTML = `<span style="font-weight:700;font-size:var(--sb-fs-14);">${title}</span>`;
     const closeBtn = document.createElement('button');
     closeBtn.textContent = 'Close \u2715';
-    closeBtn.style.cssText = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#94a3b8;font-size:var(--sb-fs-11);font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
-    closeBtn.onmouseenter = () => closeBtn.style.background = 'rgba(255,255,255,0.15)';
-    closeBtn.onmouseleave = () => closeBtn.style.background = 'rgba(255,255,255,0.08)';
+    closeBtn.style.cssText = 'background:var(--sb-control-bg);border:1px solid var(--sb-hover);color:var(--sb-text-muted);font-size:var(--sb-fs-11);font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
+    closeBtn.onmouseenter = () => closeBtn.style.background = 'var(--sb-hover)';
+    closeBtn.onmouseleave = () => closeBtn.style.background = 'var(--sb-control-bg)';
     closeBtn.onclick = () => { removePanel(id); onClose?.(); };
     hdr.appendChild(closeBtn);
     panel.appendChild(hdr);
@@ -654,7 +792,7 @@
   /** Small user identity row used in panels. */
   function renderUserRow(user) {
     const row = document.createElement('div');
-    row.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-11);margin-bottom:12px;';
+    row.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-11);margin-bottom:12px;';
     row.textContent = `${user.firstName || ''} ${user.lastName || ''} · ${user.email}`.trim();
     return row;
   }
@@ -673,7 +811,7 @@
     if (s === 'DELIVERED')                                                       return '#86efac'; // bright lime
     if (s === 'OUT_FOR_DELIVERY' || s === 'IN_TRANSIT' || s === 'SHIPPED')       return '#fcd34d'; // warm yellow
     if (s === 'RETURNED' || s === 'LOST' || s === 'FAILED' || s === 'EXCEPTION') return '#fca5a5'; // red
-    return '#e2e8f0'; // default bright
+    return 'var(--sb-text)'; // default bright
   }
 
   /** Returns a small inline pill for non-LIVE product statuses, or null if status is LIVE/missing. */
@@ -685,7 +823,7 @@
       INTERNAL_USE:                  { bg: 'rgba(239,68,68,0.15)',  fg: '#fca5a5', border: 'rgba(239,68,68,0.4)'  },
       DISCONTINUED:                  { bg: 'rgba(239,68,68,0.15)',  fg: '#fca5a5', border: 'rgba(239,68,68,0.4)'  },
     };
-    const c = palette[status] || { bg: 'rgba(148,163,184,0.15)', fg: '#cbd5e1', border: 'rgba(148,163,184,0.4)' };
+    const c = palette[status] || { bg: 'rgba(148,163,184,0.15)', fg: 'var(--sb-text-secondary)', border: 'rgba(148,163,184,0.4)' };
     const label = status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, ch => ch.toUpperCase());
     const span = document.createElement('span');
     span.textContent = label;
@@ -697,7 +835,7 @@
   function makeStatusLog() {
     const el = document.createElement('div');
     el.style.cssText = 'margin-top:10px;font-size:var(--sb-fs-11);line-height:1.8;';
-    el.log = (msg, color = '#94a3b8') => {
+    el.log = (msg, color = 'var(--sb-text-muted)') => {
       const row = document.createElement('div');
       row.style.color = color;
       row.textContent = msg;
@@ -723,7 +861,7 @@
   /** Section label used in forms. */
   function makeLabel(text) {
     const l = document.createElement('div');
-    l.style.cssText = 'font-size:var(--sb-fs-12);color:#64748b;font-weight:600;letter-spacing:0.05em;margin-bottom:5px;margin-top:12px;';
+    l.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-text-dim);font-weight:600;letter-spacing:0.05em;margin-bottom:5px;margin-top:12px;';
     l.textContent = text;
     return l;
   }
@@ -731,7 +869,7 @@
   /** Select dropdown for forms. */
   function makeSelect(options, selected) {
     const s = document.createElement('select');
-    s.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-13);box-sizing:border-box;cursor:pointer;';
+    s.style.cssText = 'width:100%;background:var(--sb-bg-deep);color:var(--sb-text);border:1px solid var(--sb-border);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-13);box-sizing:border-box;cursor:pointer;';
     options.forEach(o => {
       const opt = document.createElement('option');
       opt.value = o.value;
@@ -745,7 +883,7 @@
   /** Status element for panel footers. */
   function makeStatusEl() {
     const el = document.createElement('div');
-    el.style.cssText = 'font-size:var(--sb-fs-12);min-height:16px;margin-top:10px;color:#94a3b8;';
+    el.style.cssText = 'font-size:var(--sb-fs-12);min-height:16px;margin-top:10px;color:var(--sb-text-muted);';
     return el;
   }
 
@@ -765,8 +903,8 @@
     const cancelBtn = document.createElement('button');
     cancelBtn.textContent = 'Cancel';
     cancelBtn.style.cssText = `
-      padding:7px 16px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);
-      background:transparent;color:#e2e8f0;font-size:var(--sb-fs-13);cursor:pointer;flex:1;
+      padding:7px 16px;border-radius:6px;border:1px solid var(--sb-hover);
+      background:transparent;color:var(--sb-text);font-size:var(--sb-fs-13);cursor:pointer;flex:1;
     `;
     cancelBtn.onclick = onCancel;
 
@@ -804,8 +942,8 @@
     toolbarEl.style.cssText = `
       display:flex;align-items:center;gap:6px;
       padding:3px 10px;
-      background:#1a1a2e;
-      border-bottom:1px solid rgba(255,255,255,0.08);
+      background:var(--sb-bg-row);
+      border-bottom:1px solid var(--sb-control-bg);
       min-height:28px;flex-wrap:wrap;
       box-sizing:border-box;width:100%;
     `;
@@ -829,11 +967,11 @@
     btn.textContent = label;
     btn.style.cssText = `
       font-size:var(--sb-fs-13);font-weight:600;padding:5px 12px;border-radius:4px;
-      border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.07);
-      color:#e2e8f0;cursor:pointer;white-space:nowrap;transition:background 0.15s;
+      border:1px solid var(--sb-hover);background:var(--sb-control-bg);
+      color:var(--sb-text);cursor:pointer;white-space:nowrap;transition:background 0.15s;
     `;
-    btn.addEventListener('mouseenter', () => btn.style.background = 'rgba(255,255,255,0.15)');
-    btn.addEventListener('mouseleave', () => btn.style.background = 'rgba(255,255,255,0.07)');
+    btn.addEventListener('mouseenter', () => btn.style.background = 'var(--sb-hover)');
+    btn.addEventListener('mouseleave', () => btn.style.background = 'var(--sb-control-bg)');
     btn.addEventListener('click', () => onClick(btn));
     toolbar.appendChild(btn);
     return btn;
@@ -1506,7 +1644,7 @@
     const borderColor = isReplacement ? '#7c3aed' : '#4f46e5';
     wrap.style.cssText = `
       margin-top:${compact ? 4 : 0}px;padding:${compact ? '6px 8px' : '10px 12px'};
-      background:${isReplacement ? '#1a1530' : '#1a1a2e'};border-radius:6px;border-left:2px solid ${borderColor};
+      background:${isReplacement ? 'var(--sb-bg-row-replacement)' : 'var(--sb-bg-row)'};border-radius:6px;border-left:2px solid ${borderColor};
     `;
 
     const _ws = (order.warehouseOrder?.data?.status || order.status || '').toUpperCase();
@@ -1514,7 +1652,7 @@
       : (_ws.includes('CANCEL') || _ws.includes('BACK')) ? '#fca5a5'
       : (_ws === 'PRINTED' || _ws.includes('PROCESS')) ? '#818cf8'
       : (_ws === 'PENDING') ? '#f59e0b'
-      : '#94a3b8';
+      : 'var(--sb-text-muted)';
 
     // Header row
     const hdr = document.createElement('div');
@@ -1527,7 +1665,7 @@
       oi.product?.productInfo?.productType === 'PERFUME_CASE_UPCHARGE' || oi.productType === 'PERFUME_CASE_UPCHARGE'
     );
     hdr.innerHTML = `
-      <span style="color:#94a3b8;font-size:var(--sb-fs-11);">${orderMonthLabel(order)}</span>
+      <span style="color:var(--sb-text-muted);font-size:var(--sb-fs-11);">${orderMonthLabel(order)}</span>
       <span style="color:${statusColor};font-weight:600;font-size:var(--sb-fs-11);">${order.warehouseOrder?.data?.status || order.status}</span>
       ${(order.type && order.type !== 'SUBSCRIPTION') ? `<span style="color:#f59e0b;font-size:var(--sb-fs-11);font-weight:600;">${order.type.replace(/_/g,' ')}</span>` : ''}
       ${hasWelcomeKit ? '<span style="background:rgba(99,102,241,0.2);color:#a5b4fc;font-size:var(--sb-fs-10);font-weight:600;padding:1px 5px;border-radius:4px;border:1px solid rgba(99,102,241,0.4);">Welcome Kit</span>' : ''}
@@ -1542,7 +1680,7 @@
       const p = i?.product?.productInfo;
       if (!p) return;
       const d = document.createElement('div');
-      d.style.cssText = 'color:#cbd5e1;font-size:var(--sb-fs-12);margin-bottom:2px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+      d.style.cssText = 'color:var(--sb-text-secondary);font-size:var(--sb-fs-12);margin-bottom:2px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
       const text = document.createElement('span');
       text.textContent = `${p.name} by ${p.brand}`;
       d.appendChild(text);
@@ -1600,7 +1738,7 @@
       const slice = items.slice(-2);
       slice.forEach((item, i) => {
         const isLast = i === slice.length - 1;
-        const color = isLast ? trackingStatusColor(item.status) : '#64748b';
+        const color = isLast ? trackingStatusColor(item.status) : 'var(--sb-text-dim)';
         const d = document.createElement('div');
         d.style.cssText = `color:${color};font-size:var(--sb-fs-11);margin-top:2px;${isLast ? 'font-weight:600;' : ''}`;
         const date = new Date(item.date).toLocaleDateString('en-US', { month:'short', day:'numeric' });
@@ -1830,8 +1968,8 @@
     input.type = 'text'; input.value = prefill;
     input.placeholder = 'Name, email, address…';
     input.style.cssText = `
-      flex:1;padding:7px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);
-      background:#2a2a3e;color:#e2e8f0;font-size:var(--sb-fs-13);outline:none;
+      flex:1;padding:7px 10px;border-radius:6px;border:1px solid var(--sb-hover);
+      background:var(--sb-bg-input);color:var(--sb-text);font-size:var(--sb-fs-13);outline:none;
     `;
 
     const searchBtn = document.createElement('button');
@@ -1870,7 +2008,7 @@
       if (!target) container.innerHTML = '';
       if (headerText) {
         const hdr = document.createElement('div');
-        hdr.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:var(--sb-fs-12);';
+        hdr.style.cssText = 'color:var(--sb-text-muted);margin-bottom:8px;font-size:var(--sb-fs-12);';
         hdr.textContent = headerText;
         container.appendChild(hdr);
       }
@@ -1878,14 +2016,14 @@
         const card = document.createElement('div');
         card.dataset.subStatus = user.subscription?.status || '';
         card.style.cssText = `
-          padding:10px;margin-bottom:8px;border-radius:8px;background:#2a2a3e;
+          padding:10px;margin-bottom:8px;border-radius:8px;background:var(--sb-bg-input);
           border:1px solid transparent;transition:0.15s;
         `;
         if (filterActive && card.dataset.subStatus !== 'Active' && card.dataset.subStatus !== 'Unpaid' && card.dataset.subStatus !== 'OnHold') card.style.display = 'none';
         const s = user.userAddress?.shipping;
         const addr = s ? [s.street1,s.street2,s.city,s.region,s.postcode].filter(Boolean).join(', ') : '';
         const subSt = user.subscription?.status || '';
-        const subColor = subSt === 'Active' ? '#6ee7b7' : subSt ? '#fca5a5' : '#64748b';
+        const subColor = subSt === 'Active' ? '#6ee7b7' : subSt ? '#fca5a5' : 'var(--sb-text-dim)';
         let subLabel = subSt || 'No subscription';
         if (subSt === 'Cancelled' && user.subscription?.subscriptionEndDate) {
           subLabel = 'Cancelled ' + fmtDateTag(user.subscription.subscriptionEndDate);
@@ -1897,12 +2035,12 @@
             <div style="font-weight:700;">${user.firstName||''} ${user.lastName||''} ${isDrift ? '<span style="font-size:var(--sb-fs-10);color:#f59e0b;font-weight:600;background:rgba(245,158,11,0.15);padding:1px 5px;border-radius:3px;margin-left:4px;">' + user.origin + '</span>' : ''}</div>
             <div style="font-size:var(--sb-fs-11);font-weight:600;color:${subColor};">${subLabel}</div>
           </div>
-          <div style="color:#94a3b8;margin-top:2px;">${user.email}</div>
-          <div style="color:#64748b;font-size:var(--sb-fs-11);margin-top:2px;">ID: ${user.id}</div>
-          ${addr ? `<div style="color:#64748b;font-size:var(--sb-fs-11);margin-top:2px;">${addr}</div>` : ''}
+          <div style="color:var(--sb-text-muted);margin-top:2px;">${user.email}</div>
+          <div style="color:var(--sb-text-dim);font-size:var(--sb-fs-11);margin-top:2px;">ID: ${user.id}</div>
+          ${addr ? `<div style="color:var(--sb-text-dim);font-size:var(--sb-fs-11);margin-top:2px;">${addr}</div>` : ''}
           <div style="margin-top:8px;display:flex;gap:6px;">
             <button class="sb-apply" style="padding:4px 12px;border-radius:5px;border:none;background:#4f46e5;color:#fff;font-size:var(--sb-fs-12);font-weight:600;cursor:pointer;">Apply to Kustomer</button>
-            <a class="sb-profile" href="https://crm.scentbird.com/user/${user.id}/profile/subscription" target="_blank" style="padding:4px 12px;border-radius:5px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#e2e8f0;font-size:var(--sb-fs-12);cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;">Open Profile</a>
+            <a class="sb-profile" href="https://crm.scentbird.com/user/${user.id}/profile/subscription" target="_blank" style="padding:4px 12px;border-radius:5px;border:1px solid var(--sb-hover);background:transparent;color:var(--sb-text);font-size:var(--sb-fs-12);cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;">Open Profile</a>
           </div>
         `;
         card.onmouseenter = () => card.style.borderColor = 'rgba(79,70,229,0.5)';
@@ -1928,7 +2066,7 @@
         }
 
         const orderEl = document.createElement('div');
-        orderEl.style.cssText = 'margin-top:8px;font-size:var(--sb-fs-11);color:#64748b;';
+        orderEl.style.cssText = 'margin-top:8px;font-size:var(--sb-fs-11);color:var(--sb-text-dim);';
         card.appendChild(orderEl);
 
         if (!isDrift) {
@@ -1947,10 +2085,10 @@
 
     function doSearch() {
       const q = input.value.trim(); if (!q) return;
-      results.innerHTML = `<div style="color:#94a3b8;padding:8px 0;">Searching…</div>`;
+      results.innerHTML = `<div style="color:var(--sb-text-muted);padding:8px 0;">Searching…</div>`;
       searchCRM(q, (users, err) => {
         if (err) { results.innerHTML = `<div style="color:#fca5a5;padding:8px 0;">${err}</div>`; return; }
-        if (!users.length) { results.innerHTML = `<div style="color:#94a3b8;padding:8px 0;">No users found.</div>`; return; }
+        if (!users.length) { results.innerHTML = `<div style="color:var(--sb-text-muted);padding:8px 0;">No users found.</div>`; return; }
         renderUsers(users, `${users.length} result(s)`);
       });
     }
@@ -1960,7 +2098,7 @@
     findOtherBtn.textContent = '🔎 Find Other Accounts';
     findOtherBtn.style.cssText = `
       width:100%;padding:7px;border-radius:6px;border:1px solid rgba(148,163,184,0.25);
-      background:transparent;color:#94a3b8;font-weight:600;font-size:var(--sb-fs-12);
+      background:transparent;color:var(--sb-text-muted);font-weight:600;font-size:var(--sb-fs-12);
       cursor:pointer;margin-bottom:10px;
     `;
     findOtherBtn.onmouseenter = () => findOtherBtn.style.background = 'rgba(148,163,184,0.08)';
@@ -2000,7 +2138,7 @@
       const tier1 = [...tier1Email, ...tier1Phone];
 
       if (!tier1.length && !tier2.length && !tier3.length) {
-        results.innerHTML = `<div style="color:#94a3b8;padding:8px 0;">No search terms available — load a customer first.</div>`;
+        results.innerHTML = `<div style="color:var(--sb-text-muted);padding:8px 0;">No search terms available — load a customer first.</div>`;
         findOtherBtn.disabled = false; findOtherBtn.textContent = '🔎 Find Other Accounts';
         return;
       }
@@ -2029,7 +2167,7 @@
       findOtherBtn.disabled = false; findOtherBtn.textContent = '🔎 Find Other Accounts';
 
       if (!seen.size) {
-        results.innerHTML = `<div style="color:#94a3b8;padding:8px 0;">No other accounts found.</div>`;
+        results.innerHTML = `<div style="color:var(--sb-text-muted);padding:8px 0;">No other accounts found.</div>`;
         return;
       }
 
@@ -2039,7 +2177,7 @@
       results.innerHTML = '';
       const total = seen.size;
       const summary = document.createElement('div');
-      summary.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:var(--sb-fs-12);';
+      summary.style.cssText = 'color:var(--sb-text-muted);margin-bottom:8px;font-size:var(--sb-fs-12);';
       summary.textContent = `Found ${total} other account(s)`;
       results.appendChild(summary);
 
@@ -2051,7 +2189,7 @@
       sections.forEach(({ tier, label }) => {
         if (!byTier[tier].length) return;
         const sectionHdr = document.createElement('div');
-        sectionHdr.style.cssText = 'font-weight:700;font-size:var(--sb-fs-12);color:#cbd5e1;margin:12px 0 6px;';
+        sectionHdr.style.cssText = 'font-weight:700;font-size:var(--sb-fs-12);color:var(--sb-text-secondary);margin:12px 0 6px;';
         sectionHdr.textContent = `${label} (${byTier[tier].length})`;
         results.appendChild(sectionHdr);
         renderUsers(byTier[tier], null, results);
@@ -2082,7 +2220,7 @@
 
         if (!orders?.length) {
           const empty = document.createElement('div');
-          empty.style.color = '#94a3b8';
+          empty.style.color = 'var(--sb-text-muted)';
           empty.textContent = 'No orders found.';
           panel.appendChild(empty);
           return;
@@ -2113,14 +2251,14 @@
         groups.forEach((g, gi) => {
           if (gi > 0) {
             const sep = document.createElement('div');
-            sep.style.cssText = 'height:1px;background:rgba(255,255,255,0.06);margin:10px 0;';
+            sep.style.cssText = 'height:1px;background:var(--sb-border-soft);margin:10px 0;';
             panel.appendChild(sep);
           }
 
           g.mains.forEach((o, oi) => {
             if (oi > 0) {
               const s = document.createElement('div');
-              s.style.cssText = 'height:1px;background:rgba(255,255,255,0.04);margin:8px 0;';
+              s.style.cssText = 'height:1px;background:var(--sb-border-soft);margin:8px 0;';
               panel.appendChild(s);
             }
             panel.appendChild(renderOrderBlock(o, false, orderCtx, false));
@@ -2140,7 +2278,7 @@
 
         // Custom Shipment button
         const csSep = document.createElement('div');
-        csSep.style.cssText = 'height:1px;background:rgba(255,255,255,0.07);margin:12px 0;';
+        csSep.style.cssText = 'height:1px;background:var(--sb-control-bg);margin:12px 0;';
         panel.appendChild(csSep);
 
         const csBtn = document.createElement('button');
@@ -2190,11 +2328,11 @@
             const c = entry.charge;
             const desc = c?.cashbirdDetails?.invoice?.lineItems?.[0]?.description || c?.category || '\u2014';
             const row = document.createElement('div');
-            row.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-11);margin-bottom:3px;display:flex;gap:8px;align-items:baseline;';
+            row.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-11);margin-bottom:3px;display:flex;gap:8px;align-items:baseline;';
             row.innerHTML = `
-              <span style="color:#64748b;white-space:nowrap;">${chargeDateLabel(c?.paymentDate || entry.date)}</span>
+              <span style="color:var(--sb-text-dim);white-space:nowrap;">${chargeDateLabel(c?.paymentDate || entry.date)}</span>
               <span style="color:#fca5a5;white-space:nowrap;">${fmtMoney((c?.totalPrice || 0) * 100)}</span>
-              <span style="color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${desc}</span>
+              <span style="color:var(--sb-text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${desc}</span>
             `;
             failWrap.appendChild(row);
           });
@@ -2205,7 +2343,7 @@
         const allSuccess = result.all || (result.success ? [result.success] : []);
         if (!allSuccess.length) {
           const noEl = document.createElement('div');
-          noEl.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-12);';
+          noEl.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-12);';
           noEl.textContent = 'No successful charges found.';
           panel.appendChild(noEl);
           return;
@@ -2241,7 +2379,7 @@
 
           if (idx > 0) {
             const sep = document.createElement('div');
-            sep.style.cssText = 'height:1px;background:rgba(255,255,255,0.06);margin:10px 0;';
+            sep.style.cssText = 'height:1px;background:var(--sb-border-soft);margin:10px 0;';
             panel.appendChild(sep);
           }
 
@@ -2255,19 +2393,19 @@
             : '';
           cHdr.innerHTML = `
             <span style="font-weight:700;font-size:var(--sb-fs-13);color:#6ee7b7;">\u2714 ${fmtMoney(c.totalPrice * 100, currency)}</span>${refundTag}
-            <span style="color:#64748b;font-size:var(--sb-fs-11);">${chargeDateLabel(billingDate)}</span>
+            <span style="color:var(--sb-text-dim);font-size:var(--sb-fs-11);">${chargeDateLabel(billingDate)}</span>
           `;
           panel.appendChild(cHdr);
 
           if (pm) {
             const pmRow = document.createElement('div');
-            pmRow.style.cssText = 'color:#64748b;font-size:var(--sb-fs-11);margin-bottom:8px;';
+            pmRow.style.cssText = 'color:var(--sb-text-dim);font-size:var(--sb-fs-11);margin-bottom:8px;';
             pmRow.textContent = `${pm.type} \u00b7 ${pm.methodName}`;
             panel.appendChild(pmRow);
           }
 
           const lineWrap = document.createElement('div');
-          lineWrap.style.cssText = 'background:#2a2a3e;border-radius:6px;padding:8px 10px;margin-bottom:8px;';
+          lineWrap.style.cssText = 'background:var(--sb-bg-input);border-radius:6px;padding:8px 10px;margin-bottom:8px;';
           const visibleItems = items.filter(i => i.type !== 'FAILED_CHARGE');
           if (visibleItems.length) {
             visibleItems.forEach(item => {
@@ -2279,15 +2417,15 @@
               const row = document.createElement('div');
               row.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;font-size:var(--sb-fs-12);';
               row.innerHTML = `
-                <span style="color:#cbd5e1;">${nameStr}</span>
-                <span style="color:#94a3b8;white-space:nowrap;margin-left:8px;">${discPart}${fmtMoney(item.price, currency)} + ${fmtMoney(item.tax, currency)} tax = <strong>${fmtMoney(item.total, currency)}</strong></span>
+                <span style="color:var(--sb-text-secondary);">${nameStr}</span>
+                <span style="color:var(--sb-text-muted);white-space:nowrap;margin-left:8px;">${discPart}${fmtMoney(item.price, currency)} + ${fmtMoney(item.tax, currency)} tax = <strong>${fmtMoney(item.total, currency)}</strong></span>
               `;
               lineWrap.appendChild(row);
             });
           } else {
             const cat = c?.category || 'CHARGE';
             const fallback = document.createElement('div');
-            fallback.style.cssText = 'color:#64748b;font-size:var(--sb-fs-11);font-style:italic;';
+            fallback.style.cssText = 'color:var(--sb-text-dim);font-size:var(--sb-fs-11);font-style:italic;';
             fallback.textContent = cat.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
             lineWrap.appendChild(fallback);
           }
@@ -2302,15 +2440,15 @@
           const mergedText = allExplanations.join('\n');
           const expHdr = document.createElement('div');
           expHdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:4px;margin-bottom:4px;';
-          expHdr.innerHTML = '<span style="font-size:var(--sb-fs-11);color:#64748b;font-weight:600;letter-spacing:0.05em;">BILL EXPLANATION</span>';
+          expHdr.innerHTML = '<span style="font-size:var(--sb-fs-11);color:var(--sb-text-dim);font-weight:600;letter-spacing:0.05em;">BILL EXPLANATION</span>';
           expHdr.appendChild(makeCopyBtn(mergedText, '\uD83D\uDCCB Copy'));
           panel.appendChild(expHdr);
 
           const expBox = document.createElement('div');
           expBox.style.cssText = `
-            background:#0f172a;border-radius:6px;padding:10px 12px;
-            font-size:var(--sb-fs-12);color:#cbd5e1;white-space:pre-wrap;line-height:1.7;
-            border:1px solid rgba(255,255,255,0.06);
+            background:var(--sb-bg-deep);border-radius:6px;padding:10px 12px;
+            font-size:var(--sb-fs-12);color:var(--sb-text-secondary);white-space:pre-wrap;line-height:1.7;
+            border:1px solid var(--sb-border-soft);
           `;
           expBox.textContent = mergedText;
           panel.appendChild(expBox);
@@ -2334,7 +2472,7 @@
       panel.appendChild(renderUserRow(user));
 
       const loadingEl = document.createElement('div');
-      loadingEl.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-12);';
+      loadingEl.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-12);';
       loadingEl.textContent = 'Loading queue...';
       panel.appendChild(loadingEl);
 
@@ -2343,7 +2481,7 @@
 
         if (!blocks || !blocks.length) {
           const empty = document.createElement('div');
-          empty.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-12);';
+          empty.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-12);';
           empty.textContent = blocks ? 'Queue is empty.' : 'Failed to load queue.';
           panel.appendChild(empty);
           return;
@@ -2354,7 +2492,7 @@
 
         if (!filledBlocks.length) {
           const empty = document.createElement('div');
-          empty.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-12);';
+          empty.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-12);';
           empty.textContent = 'No products in queue.';
           panel.appendChild(empty);
           return;
@@ -2380,12 +2518,12 @@
         filledBlocks.forEach((block, idx) => {
           if (idx > 0) {
             const sep = document.createElement('div');
-            sep.style.cssText = 'height:1px;background:rgba(255,255,255,0.06);margin:8px 0;';
+            sep.style.cssText = 'height:1px;background:var(--sb-border-soft);margin:8px 0;';
             panel.appendChild(sep);
           }
 
           const blockEl = document.createElement('div');
-          blockEl.style.cssText = 'background:#0f172a;border-radius:8px;padding:10px 12px;';
+          blockEl.style.cssText = 'background:var(--sb-bg-deep);border-radius:8px;padding:10px 12px;';
 
           // Month header
           const [yearStr, monthStr] = (block.yearMonth || '').split('-');
@@ -2396,7 +2534,7 @@
           hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;';
 
           const monthEl = document.createElement('span');
-          monthEl.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-11);font-weight:600;';
+          monthEl.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-11);font-weight:600;';
           monthEl.textContent = monthLabel;
           hdr.appendChild(monthEl);
 
@@ -2404,7 +2542,7 @@
           const orderStatus = block.processedSubscriptionOrder?.status;
           if (orderStatus) {
             const statusColor = (orderStatus === 'SHIPPED' || orderStatus === 'DELIVERED') ? '#6ee7b7'
-              : orderStatus === 'PENDING' ? '#f59e0b' : '#94a3b8';
+              : orderStatus === 'PENDING' ? '#f59e0b' : 'var(--sb-text-muted)';
             const statusEl = document.createElement('span');
             statusEl.style.cssText = `font-size:var(--sb-fs-10);font-weight:600;color:${statusColor};`;
             statusEl.textContent = orderStatus;
@@ -2424,7 +2562,7 @@
             row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;';
 
             const nameEl = document.createElement('span');
-            nameEl.style.cssText = 'color:#cbd5e1;font-size:var(--sb-fs-12);flex:1;margin-right:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+            nameEl.style.cssText = 'color:var(--sb-text-secondary);font-size:var(--sb-fs-12);flex:1;margin-right:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
             const nameText = document.createElement('span');
             nameText.textContent = prodName;
             nameEl.appendChild(nameText);
@@ -2449,13 +2587,13 @@
               const delBtn = document.createElement('button');
               delBtn.textContent = '✕';
               delBtn.title = 'Remove from queue';
-              delBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:#64748b;font-size:var(--sb-fs-13);padding:0 3px;flex-shrink:0;';
+              delBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--sb-text-dim);font-size:var(--sb-fs-13);padding:0 3px;flex-shrink:0;';
               delBtn.onmouseenter = () => delBtn.style.color = '#fca5a5';
-              delBtn.onmouseleave = () => delBtn.style.color = '#64748b';
+              delBtn.onmouseleave = () => delBtn.style.color = 'var(--sb-text-dim)';
               delBtn.onclick = () => {
                 delBtn.disabled = true;
                 delBtn.textContent = '⏳';
-                delBtn.style.color = '#94a3b8';
+                delBtn.style.color = 'var(--sb-text-muted)';
 
                 const doDelete = () => {
                   customerApiDelete(prodFlatIdx, (data, err) => {
@@ -2501,7 +2639,7 @@
           copyAllRow.style.cssText = 'display:flex;justify-content:flex-end;margin-top:8px;';
           const copyAllBtn = document.createElement('button');
           copyAllBtn.textContent = '📋 Copy All';
-          copyAllBtn.style.cssText = 'background:none;border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#818cf8;font-size:var(--sb-fs-11);padding:4px 10px;cursor:pointer;';
+          copyAllBtn.style.cssText = 'background:none;border:1px solid var(--sb-border);border-radius:5px;color:#818cf8;font-size:var(--sb-fs-11);padding:4px 10px;cursor:pointer;';
           copyAllBtn.onmouseenter = () => copyAllBtn.style.background = 'rgba(99,102,241,0.1)';
           copyAllBtn.onmouseleave = () => copyAllBtn.style.background = 'none';
           copyAllBtn.onclick = () => {
@@ -2574,11 +2712,11 @@
     // Products
     form.appendChild(makeLabel('PRODUCTS'));
     const itemsWrap = document.createElement('div');
-    itemsWrap.style.cssText = 'background:#0f172a;border-radius:6px;padding:8px 10px;min-height:30px;';
+    itemsWrap.style.cssText = 'background:var(--sb-bg-deep);border-radius:6px;padding:8px 10px;min-height:30px;';
     const itemChecks = [];
 
     const noItems = document.createElement('div');
-    noItems.style.cssText = 'color:#64748b;font-size:var(--sb-fs-11);font-style:italic;';
+    noItems.style.cssText = 'color:var(--sb-text-dim);font-size:var(--sb-fs-11);font-style:italic;';
     noItems.textContent = 'No products added. Use Search Product below.';
     itemsWrap.appendChild(noItems);
     form.appendChild(itemsWrap);
@@ -2603,12 +2741,12 @@
     const commentInput = document.createElement('textarea');
     commentInput.placeholder = 'Add a note...';
     commentInput.rows = 2;
-    commentInput.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-12);box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;';
+    commentInput.style.cssText = 'width:100%;background:var(--sb-bg-deep);color:var(--sb-text);border:1px solid var(--sb-border);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-12);box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;';
     form.appendChild(commentInput);
 
     // Credit info (loaded async)
     const creditInfo = document.createElement('div');
-    creditInfo.style.cssText = 'margin-top:12px;font-size:var(--sb-fs-11);color:#94a3b8;';
+    creditInfo.style.cssText = 'margin-top:12px;font-size:var(--sb-fs-11);color:var(--sb-text-muted);';
     creditInfo.textContent = 'Loading credit info...';
     form.appendChild(creditInfo);
 
@@ -2692,22 +2830,22 @@
       const reasonLabel = CS_REASONS.find(r => r.value === reasonSel.value)?.label || reasonSel.value;
 
       const detailsEl = document.createElement('div');
-      detailsEl.style.cssText = 'background:#0f172a;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);line-height:1.8;color:#cbd5e1;';
+      detailsEl.style.cssText = 'background:var(--sb-bg-deep);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);line-height:1.8;color:var(--sb-text-secondary);';
 
       let detailsHtml = `
-        <div><span style="color:#64748b;">Month</span>&nbsp;&nbsp;&nbsp;&nbsp; ${monthNames[csMonth - 1]} ${csYear}</div>
-        <div><span style="color:#64748b;">Reason</span>&nbsp;&nbsp;&nbsp; ${reasonLabel}</div>
-        <div><span style="color:#64748b;">Products</span>&nbsp; ${selectedItems.length}</div>
+        <div><span style="color:var(--sb-text-dim);">Month</span>&nbsp;&nbsp;&nbsp;&nbsp; ${monthNames[csMonth - 1]} ${csYear}</div>
+        <div><span style="color:var(--sb-text-dim);">Reason</span>&nbsp;&nbsp;&nbsp; ${reasonLabel}</div>
+        <div><span style="color:var(--sb-text-dim);">Products</span>&nbsp; ${selectedItems.length}</div>
       `;
       if (creditsToAdd > 0) {
-        detailsHtml += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.07);color:#f59e0b;font-weight:600;">${creditsToAdd} credit(s) will be added</div>`;
+        detailsHtml += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--sb-control-bg);color:#f59e0b;font-weight:600;">${creditsToAdd} credit(s) will be added</div>`;
       }
       detailsEl.innerHTML = detailsHtml;
       confBox.appendChild(detailsEl);
 
       // Product list
       const prodList = document.createElement('div');
-      prodList.style.cssText = 'margin-bottom:12px;font-size:var(--sb-fs-11);color:#94a3b8;';
+      prodList.style.cssText = 'margin-bottom:12px;font-size:var(--sb-fs-11);color:var(--sb-text-muted);';
       itemChecks.filter(({ chk }) => chk.checked).forEach(({ item }) => {
         const pi = item.product?.productInfo || item.productInfo;
         const row = document.createElement('div');
@@ -2763,7 +2901,7 @@
                   return;
                 }
 
-                confStatus.style.color = '#94a3b8';
+                confStatus.style.color = 'var(--sb-text-muted)';
                 confStatus.textContent = 'Finding automated comment...';
 
                 const csOrderNumber = data?.customShipmentSave?.data?.orderNumber;
@@ -2871,8 +3009,8 @@
       emailInput.type = 'email';
       emailInput.value = user.email || '';
       emailInput.style.cssText = `
-        flex:1;padding:7px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);
-        background:#0f172a;color:#e2e8f0;font-size:var(--sb-fs-12);outline:none;box-sizing:border-box;
+        flex:1;padding:7px 10px;border-radius:6px;border:1px solid var(--sb-hover);
+        background:var(--sb-bg-deep);color:var(--sb-text);font-size:var(--sb-fs-12);outline:none;box-sizing:border-box;
       `;
 
       const updateBtn = document.createElement('button');
@@ -3014,7 +3152,7 @@
       const shipping = user.userAddress?.shipping;
       if (shipping) {
         const addrDisplay = document.createElement('div');
-        addrDisplay.style.cssText = 'font-size:var(--sb-fs-11);color:#94a3b8;margin-bottom:8px;line-height:1.5;';
+        addrDisplay.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-text-muted);margin-bottom:8px;line-height:1.5;';
         addrDisplay.textContent = [shipping.street1, shipping.street2, shipping.city, shipping.region, shipping.postcode].filter(Boolean).join(', ');
         panel.appendChild(addrDisplay);
       }
@@ -3060,8 +3198,8 @@
       addrInput.type = 'text';
       addrInput.placeholder = 'Start typing new address...';
       addrInput.style.cssText = `
-        width:100%;padding:7px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);
-        background:#0f172a;color:#e2e8f0;font-size:var(--sb-fs-12);outline:none;box-sizing:border-box;
+        width:100%;padding:7px 10px;border-radius:6px;border:1px solid var(--sb-hover);
+        background:var(--sb-bg-deep);color:var(--sb-text);font-size:var(--sb-fs-12);outline:none;box-sizing:border-box;
       `;
       addrEditWrap.appendChild(addrInput);
 
@@ -3070,7 +3208,7 @@
       addrEditWrap.appendChild(addrResults);
 
       const selectedAddr = document.createElement('div');
-      selectedAddr.style.cssText = 'display:none;background:#0f172a;border-radius:6px;padding:8px 10px;margin-top:8px;font-size:var(--sb-fs-11);color:#cbd5e1;line-height:1.6;';
+      selectedAddr.style.cssText = 'display:none;background:var(--sb-bg-deep);border-radius:6px;padding:8px 10px;margin-top:8px;font-size:var(--sb-fs-11);color:var(--sb-text-secondary);line-height:1.6;';
       addrEditWrap.appendChild(selectedAddr);
 
       const addrStatus = makeStatusEl();
@@ -3107,7 +3245,7 @@
 
               data.addressAutocomplete.data.forEach(suggestion => {
                 const row = document.createElement('div');
-                row.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:var(--sb-fs-11);color:#cbd5e1;border-bottom:1px solid rgba(255,255,255,0.05);';
+                row.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:var(--sb-fs-11);color:var(--sb-text-secondary);border-bottom:1px solid var(--sb-border-soft);';
                 row.onmouseenter = () => row.style.background = 'rgba(99,102,241,0.15)';
                 row.onmouseleave = () => row.style.background = '';
 
@@ -3118,7 +3256,7 @@
 
                 if (suggestion.secondaryText) {
                   const sec = document.createElement('div');
-                  sec.style.cssText = 'color:#64748b;font-size:var(--sb-fs-10);';
+                  sec.style.cssText = 'color:var(--sb-text-dim);font-size:var(--sb-fs-10);';
                   sec.textContent = suggestion.secondaryText;
                   row.appendChild(sec);
                 }
@@ -3130,7 +3268,7 @@
                     return;
                   }
 
-                  addrResults.innerHTML = '<div style="color:#94a3b8;font-size:var(--sb-fs-11);padding:6px 10px;">Loading details...</div>';
+                  addrResults.innerHTML = '<div style="color:var(--sb-text-muted);font-size:var(--sb-fs-11);padding:6px 10px;">Loading details...</div>';
                   customerApiCall('AddressDetails',
                     `query AddressDetails($input: AddressAutocompleteDetailsInput!) {
                       addressAutocompleteDetails(input: $input) {
@@ -3150,7 +3288,7 @@
                       addrInput.value = '';
                       selectedAddr.style.display = '';
                       selectedAddr.innerHTML = `
-                        <div style="font-weight:600;color:#e2e8f0;">${addr.street1 || ''}${addr.street2 ? ', ' + addr.street2 : ''}</div>
+                        <div style="font-weight:600;color:var(--sb-text);">${addr.street1 || ''}${addr.street2 ? ', ' + addr.street2 : ''}</div>
                         <div>${addr.city || ''}, ${addr.region || ''} ${addr.postalCode || ''}</div>
                       `;
                       addrSaveBtn.style.display = '';
@@ -3309,15 +3447,15 @@
         // Customer info
         const name = [user.firstName, user.lastName].filter(Boolean).join(' ') || '\u2014';
         const infoEl = document.createElement('div');
-        infoEl.style.cssText = 'font-size:var(--sb-fs-12);color:#94a3b8;margin-bottom:10px;line-height:1.6;';
-        infoEl.innerHTML = `<span style="color:#e2e8f0;font-weight:600;">${name}</span> &middot; ${user.email}`;
+        infoEl.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-text-muted);margin-bottom:10px;line-height:1.6;';
+        infoEl.innerHTML = `<span style="color:var(--sb-text);font-weight:600;">${name}</span> &middot; ${user.email}`;
         panel.appendChild(infoEl);
 
         // Last subscription order summary
         const lastOrder = orders?.find(o => o.type === 'SUBSCRIPTION');
         if (lastOrder) {
           const orderEl = document.createElement('div');
-          orderEl.style.cssText = 'background:#1a1a2e;border-radius:6px;padding:8px 10px;margin-bottom:12px;border-left:2px solid #4f46e5;';
+          orderEl.style.cssText = 'background:var(--sb-bg-row);border-radius:6px;padding:8px 10px;margin-bottom:12px;border-left:2px solid #4f46e5;';
           const monthLbl = orderMonthLabel(lastOrder);
           const ws = lastOrder.warehouseOrder?.data?.status || lastOrder.status || '';
           const wsUC = ws.toUpperCase();
@@ -3329,9 +3467,9 @@
 
           const orderInfo = document.createElement('div');
           orderInfo.innerHTML = `<div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;">
-            <span style="color:#94a3b8;font-size:var(--sb-fs-11);">${monthLbl}</span>
+            <span style="color:var(--sb-text-muted);font-size:var(--sb-fs-11);">${monthLbl}</span>
             <span style="color:${statusColor};font-size:var(--sb-fs-11);font-weight:600;">${ws}</span>
-          </div>` + lines.map(l => `<div style="color:#cbd5e1;font-size:var(--sb-fs-11);">${l}</div>`).join('');
+          </div>` + lines.map(l => `<div style="color:var(--sb-text-secondary);font-size:var(--sb-fs-11);">${l}</div>`).join('');
 
           // Tracking
           const trackNo  = lastOrder.tracking?.trackingNumber || lastOrder.shipment?.trackingNumber || '';
@@ -3373,7 +3511,7 @@
             evEl.style.cssText = 'margin-top:3px;';
             trackItems.slice(-2).forEach(item => {
               const d = document.createElement('div');
-              d.style.cssText = 'color:#64748b;font-size:var(--sb-fs-11);margin-top:1px;';
+              d.style.cssText = 'color:var(--sb-text-dim);font-size:var(--sb-fs-11);margin-top:1px;';
               const dt = new Date(item.date).toLocaleDateString('en-US', { month:'short', day:'numeric' });
               d.textContent = dt + ' · ' + item.description;
               evEl.appendChild(d);
@@ -3394,7 +3532,7 @@
             white-space:nowrap;flex-shrink:0;
             cursor:${refundable ? 'pointer' : 'not-allowed'};
             background:${refundable ? '#7c3aed' : 'rgba(124,58,237,0.2)'};
-            color:${refundable ? '#fff' : '#64748b'};
+            color:${refundable ? '#fff' : 'var(--sb-text-dim)'};
           `;
           if (refundable) {
             orderRefBtn.onmouseenter = () => orderRefBtn.style.background = '#6d28d9';
@@ -3452,7 +3590,7 @@
                 confirmBtn.textContent = 'Confirm Cancellation';
                 return;
               }
-              statusEl.style.color = '#94a3b8';
+              statusEl.style.color = 'var(--sb-text-muted)';
               statusEl.textContent = 'Posting comment...';
               mutPostComment(user.id, 'Subscription Cancelled', () => {
                 statusEl.style.color = '#6ee7b7';
@@ -3480,7 +3618,7 @@
 
         // ── Delete Payment Methods ────────────────────────────────────────
         const pmSep = document.createElement('div');
-        pmSep.style.cssText = 'height:1px;background:rgba(255,255,255,0.07);margin:12px 0;';
+        pmSep.style.cssText = 'height:1px;background:var(--sb-control-bg);margin:12px 0;';
         panel.appendChild(pmSep);
 
         const delPmBtn = document.createElement('button');
@@ -3495,8 +3633,8 @@
           const warnEl = document.createElement('div');
           warnEl.style.cssText = 'background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.3);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:#fca5a5;line-height:1.6;';
           warnEl.innerHTML = `This will permanently remove <strong>all stored payment methods</strong> for:<br><br>
-            <span style="color:#e2e8f0;font-weight:600;">${name}</span><br>
-            <span style="color:#94a3b8;">${user.email}</span><br><br>
+            <span style="color:var(--sb-text);font-weight:600;">${name}</span><br>
+            <span style="color:var(--sb-text-muted);">${user.email}</span><br><br>
             This action cannot be undone.`;
           box.appendChild(warnEl);
 
@@ -3552,10 +3690,10 @@
           const warnEl = document.createElement('div');
           warnEl.style.cssText = 'background:rgba(153,27,27,0.15);border:1px solid rgba(153,27,27,0.4);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:#fca5a5;line-height:1.6;';
           warnEl.innerHTML = `This will:<br>
-            <span style="color:#e2e8f0;">1.</span> Remove all payment methods<br>
-            <span style="color:#e2e8f0;">2.</span> Disable the account email<br><br>
-            <span style="color:#e2e8f0;font-weight:600;">${name}</span><br>
-            <span style="color:#94a3b8;">${user.email}</span><br><br>
+            <span style="color:var(--sb-text);">1.</span> Remove all payment methods<br>
+            <span style="color:var(--sb-text);">2.</span> Disable the account email<br><br>
+            <span style="color:var(--sb-text);font-weight:600;">${name}</span><br>
+            <span style="color:var(--sb-text-muted);">${user.email}</span><br><br>
             This action cannot be undone.`;
           box.appendChild(warnEl);
 
@@ -3640,7 +3778,7 @@
           });
 
           const intro = document.createElement('div');
-          intro.style.cssText = 'font-size:var(--sb-fs-12);color:#94a3b8;margin-bottom:10px;';
+          intro.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-text-muted);margin-bottom:10px;';
           intro.textContent = isAdding
             ? `Add ${user.email} to the fraud blocklist?`
             : `Remove ${user.email} from the fraud blocklist?`;
@@ -3650,7 +3788,7 @@
           const ta = document.createElement('textarea');
           ta.rows = 3;
           ta.placeholder = isAdding ? 'Reason for blocklisting…' : 'Reason for unblocklisting…';
-          ta.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-12);box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;margin-bottom:10px;';
+          ta.style.cssText = 'width:100%;background:var(--sb-bg-deep);color:var(--sb-text);border:1px solid var(--sb-border);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-12);box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;margin-bottom:10px;';
           box.appendChild(ta);
 
           const dlgStatus = makeStatusEl();
@@ -3663,7 +3801,7 @@
             onConfirm: (confirmBtn, cancelBtn) => {
               confirmBtn.disabled = true; cancelBtn.disabled = true;
               confirmBtn.textContent = isAdding ? 'Blocklisting…' : 'Removing…';
-              dlgStatus.style.color = '#94a3b8';
+              dlgStatus.style.color = 'var(--sb-text-muted)';
               dlgStatus.textContent = '';
 
               gqlMutate('userSetFraudStatus', SET_FRAUD_STATUS_MUTATION,
@@ -3721,7 +3859,7 @@
     const panel = createPanel({ id: 'sb-refund-charges-panel', title: '💳 Charges — Refund', width: 360, right: 350 });
 
     const loadingEl = document.createElement('div');
-    loadingEl.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-12);';
+    loadingEl.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-12);';
     loadingEl.textContent = 'Loading charges...';
     panel.appendChild(loadingEl);
 
@@ -3730,7 +3868,7 @@
 
       if (!result || !result.all?.length) {
         const empty = document.createElement('div');
-        empty.style.cssText = 'color:#94a3b8;font-size:var(--sb-fs-12);';
+        empty.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-12);';
         empty.textContent = result ? 'No charges found for this month.' : 'Failed to load charges.';
         panel.appendChild(empty);
         return;
@@ -3748,21 +3886,21 @@
 
         if (idx > 0) {
           const sep = document.createElement('div');
-          sep.style.cssText = 'height:1px;background:rgba(255,255,255,0.07);margin:10px 0;';
+          sep.style.cssText = 'height:1px;background:var(--sb-control-bg);margin:10px 0;';
           panel.appendChild(sep);
         }
 
         const block = document.createElement('div');
-        block.style.cssText = 'background:#0f172a;border-radius:8px;padding:10px 12px;';
+        block.style.cssText = 'background:var(--sb-bg-deep);border-radius:8px;padding:10px 12px;';
 
         // Charge header
         const chgHdr = document.createElement('div');
         chgHdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;';
         const chgLeft = document.createElement('div');
-        chgLeft.style.cssText = 'font-size:var(--sb-fs-12);color:#94a3b8;';
+        chgLeft.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-text-muted);';
         chgLeft.textContent = chargeDateLabel(charge.paymentDate);
         const chgTotal = document.createElement('div');
-        chgTotal.style.cssText = 'display:flex;align-items:center;gap:2px;font-weight:700;font-size:var(--sb-fs-13);color:#e2e8f0;';
+        chgTotal.style.cssText = 'display:flex;align-items:center;gap:2px;font-weight:700;font-size:var(--sb-fs-13);color:var(--sb-text);';
         chgTotal.textContent = fmtMoney(totalCents, currency);
         chgTotal.appendChild(makeCopyBtn(fmtMoney(totalCents, currency), '📋'));
         chgHdr.appendChild(chgLeft);
@@ -3773,7 +3911,7 @@
         const pmMethod = charge?.cashbirdDetails?.paymentMethod?.methodName || '';
         if (pmMethod) {
           const pmEl = document.createElement('div');
-          pmEl.style.cssText = 'font-size:var(--sb-fs-11);color:#64748b;margin-bottom:6px;';
+          pmEl.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-text-dim);margin-bottom:6px;';
           pmEl.textContent = pmMethod;
           block.appendChild(pmEl);
         }
@@ -3785,14 +3923,14 @@
           breakdown.style.cssText = 'margin-bottom:8px;';
           lineItems.forEach(li => {
             const liEl = document.createElement('div');
-            liEl.style.cssText = 'display:flex;justify-content:space-between;font-size:var(--sb-fs-11);color:#94a3b8;padding:2px 0;';
+            liEl.style.cssText = 'display:flex;justify-content:space-between;font-size:var(--sb-fs-11);color:var(--sb-text-muted);padding:2px 0;';
             const liName = document.createElement('span');
             liName.style.cssText = 'flex:1;margin-right:8px;';
             liName.textContent = li.description || li.productCode || li.type || '—';
             const liRight = document.createElement('span');
             liRight.style.cssText = 'display:flex;align-items:center;gap:6px;white-space:nowrap;';
             const liAmt = document.createElement('span');
-            liAmt.style.color = '#cbd5e1';
+            liAmt.style.color = 'var(--sb-text-secondary)';
             liAmt.textContent = fmtMoney(li.total || li.price || 0, currency);
             liRight.appendChild(liAmt);
             if (li.refundedAmount !== null && li.refundedAmount !== undefined) {
@@ -3808,7 +3946,7 @@
           });
           if (invoice.tax) {
             const taxEl = document.createElement('div');
-            taxEl.style.cssText = 'display:flex;justify-content:space-between;font-size:var(--sb-fs-11);color:#64748b;padding:2px 0;border-top:1px solid rgba(255,255,255,0.05);margin-top:3px;';
+            taxEl.style.cssText = 'display:flex;justify-content:space-between;font-size:var(--sb-fs-11);color:var(--sb-text-dim);padding:2px 0;border-top:1px solid var(--sb-border-soft);margin-top:3px;';
             taxEl.innerHTML = `<span>Tax</span><span>${fmtMoney(invoice.tax, currency)}</span>`;
             breakdown.appendChild(taxEl);
           }
@@ -3818,7 +3956,7 @@
         // Credit summary
         if (credits.length) {
           const creditEl = document.createElement('div');
-          creditEl.style.cssText = 'font-size:var(--sb-fs-11);color:#94a3b8;margin-bottom:8px;';
+          creditEl.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-text-muted);margin-bottom:8px;';
           const perCredit = credits[0]?.total || credits[0]?.amount || 0;
           creditEl.textContent = credits.length === 1
             ? fmtMoney(perCredit, currency) + ' credit'
@@ -3855,7 +3993,7 @@
           width:100%;padding:7px;border-radius:6px;border:none;margin-top:4px;
           font-weight:700;font-size:var(--sb-fs-12);cursor:${canRefund ? 'pointer' : 'not-allowed'};
           background:${canRefund ? '#7c3aed' : 'rgba(124,58,237,0.2)'};
-          color:${canRefund ? '#fff' : '#64748b'};
+          color:${canRefund ? '#fff' : 'var(--sb-text-dim)'};
           box-sizing:border-box;
         `;
         if (canRefund) {
@@ -3871,7 +4009,7 @@
       // Refund total row — updates dynamically after each refund
       const refundTotalRow = document.createElement('div');
       refundTotalRow.id = 'sb-refund-total-row';
-      refundTotalRow.style.cssText = 'display:none;margin-top:10px;padding:8px 12px;background:#0f172a;border-radius:8px;border:1px solid rgba(110,231,183,0.2);';
+      refundTotalRow.style.cssText = 'display:none;margin-top:10px;padding:8px 12px;background:var(--sb-bg-deep);border-radius:8px;border:1px solid rgba(110,231,183,0.2);';
       const refundTotalInner = document.createElement('div');
       refundTotalInner.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
       const refundTotalLabel = document.createElement('span');
@@ -3908,7 +4046,7 @@
 
     lines.forEach(line => {
       const el = document.createElement('div');
-      el.style.cssText = 'font-size:var(--sb-fs-12);color:#94a3b8;margin-bottom:5px;padding:4px 8px;background:#2a2a3e;border-radius:4px;';
+      el.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-text-muted);margin-bottom:5px;padding:4px 8px;background:var(--sb-bg-input);border-radius:4px;';
       el.textContent = line;
       box.appendChild(el);
     });
@@ -3946,7 +4084,7 @@
 
     // Order info
     const info = document.createElement('div');
-    info.style.cssText = 'font-size:var(--sb-fs-12);color:#94a3b8;margin-bottom:14px;';
+    info.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-text-muted);margin-bottom:14px;';
     info.textContent = orderMonthLabel(order) + ' order';
     box.appendChild(info);
 
@@ -3959,7 +4097,7 @@
     // Custom comment textarea (shown when "Other" is selected)
     const otherTa = document.createElement('textarea');
     otherTa.placeholder = 'Custom reason / comment…';
-    otherTa.style.cssText = 'width:100%;min-height:60px;padding:6px 8px;background:#0f172a;border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#e2e8f0;font-size:var(--sb-fs-12);font-family:inherit;box-sizing:border-box;margin-bottom:14px;display:none;';
+    otherTa.style.cssText = 'width:100%;min-height:60px;padding:6px 8px;background:var(--sb-bg-deep);border:1px solid var(--sb-border);border-radius:5px;color:var(--sb-text);font-size:var(--sb-fs-12);font-family:inherit;box-sizing:border-box;margin-bottom:14px;display:none;';
     box.appendChild(otherTa);
     select.addEventListener('change', () => {
       otherTa.style.display = select.value === '__OTHER__' ? 'block' : 'none';
@@ -3999,7 +4137,7 @@
             return;
           }
 
-          statusEl.style.color = '#94a3b8';
+          statusEl.style.color = 'var(--sb-text-muted)';
           statusEl.textContent = 'Posting comment...';
 
           const d = new Date(order.year + '-' + String(order.month).padStart(2, '0') + '-01');
@@ -4034,7 +4172,7 @@
 
     // Details
     const details = document.createElement('div');
-    details.style.cssText = 'background:#0f172a;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);line-height:1.8;color:#cbd5e1;';
+    details.style.cssText = 'background:var(--sb-bg-deep);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);line-height:1.8;color:var(--sb-text-secondary);';
     const perCredit = credits[0]?.total || credits[0]?.amount || 0;
     const creditLine = credits.length === 1
       ? fmtMoney(perCredit, currency) + ' credit'
@@ -4045,10 +4183,10 @@
       shippingLine = '<br>' + fmtMoney(sc, currency) + ' shipping credit';
     }
     details.innerHTML = `
-      <div><span style="color:#64748b;">Date</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${dateStr}</div>
-      <div><span style="color:#64748b;">Method</span>&nbsp;&nbsp;&nbsp; ${pmMethod}</div>
-      <div><span style="color:#64748b;">Credits</span>&nbsp;&nbsp;&nbsp; ${creditLine}${shippingLine}</div>
-      <div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.07);font-weight:700;font-size:var(--sb-fs-13);color:#e2e8f0;">
+      <div><span style="color:var(--sb-text-dim);">Date</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${dateStr}</div>
+      <div><span style="color:var(--sb-text-dim);">Method</span>&nbsp;&nbsp;&nbsp; ${pmMethod}</div>
+      <div><span style="color:var(--sb-text-dim);">Credits</span>&nbsp;&nbsp;&nbsp; ${creditLine}${shippingLine}</div>
+      <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--sb-control-bg);font-weight:700;font-size:var(--sb-fs-13);color:var(--sb-text);">
         Total refund: ${fmtMoney(totalCents, currency)}
       </div>`;
     box.appendChild(details);
@@ -4073,7 +4211,7 @@
     const refundedItems = dlgLineItems.filter(li => li.refundedAmount !== null && li.refundedAmount !== undefined && li.total > 0);
     if (refundedItems.length) {
       const liWarn = document.createElement('div');
-      liWarn.style.cssText = 'font-size:var(--sb-fs-11);color:#94a3b8;margin-bottom:10px;line-height:1.8;';
+      liWarn.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-text-muted);margin-bottom:10px;line-height:1.8;';
       refundedItems.forEach(li => {
         const row = document.createElement('div');
         const fullyRefunded = li.refundedAmount >= li.total;
@@ -4126,7 +4264,7 @@
               return;
             }
 
-            statusEl.style.color = '#94a3b8';
+            statusEl.style.color = 'var(--sb-text-muted)';
             statusEl.textContent = 'Posting comment...';
 
             // Track total refunded
@@ -4182,7 +4320,7 @@
         };
 
         if (orderId) {
-          statusEl.style.color = '#94a3b8';
+          statusEl.style.color = 'var(--sb-text-muted)';
           statusEl.textContent = 'Cancelling order...';
           mutCancelOrder(orderId, reason, (data, cancelErr) => {
             if (cancelErr) {
@@ -4253,7 +4391,7 @@
 
     const skipBtn = document.createElement('button');
     skipBtn.textContent = 'Billed Already';
-    skipBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#94a3b8;font-size:var(--sb-fs-12);cursor:pointer;';
+    skipBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid var(--sb-hover);background:transparent;color:var(--sb-text-muted);font-size:var(--sb-fs-12);cursor:pointer;';
     btnRow.appendChild(skipBtn);
 
     const statusEl = makeStatusEl();
@@ -4299,7 +4437,7 @@
       const { overlay, box } = createModal({ id: 'sb-upcharge-modal', title: '💳 Bill Upcharge', width: 320 });
 
       const detailsEl = document.createElement('div');
-      detailsEl.style.cssText = 'background:#0f172a;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:#cbd5e1;line-height:1.8;';
+      detailsEl.style.cssText = 'background:var(--sb-bg-deep);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:var(--sb-text-secondary);line-height:1.8;';
 
       // List upcharge products
       let detailsHtml = '';
@@ -4310,7 +4448,7 @@
           detailsHtml += `<div>${pi.name} by ${pi.brand} — <span style="color:#f59e0b;font-weight:600;">+$${up}</span></div>`;
         }
       });
-      detailsHtml += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.07);font-weight:700;font-size:var(--sb-fs-13);color:#e2e8f0;">Total: $${total}</div>`;
+      detailsHtml += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--sb-control-bg);font-weight:700;font-size:var(--sb-fs-13);color:var(--sb-text);">Total: $${total}</div>`;
       detailsEl.innerHTML = detailsHtml;
       box.appendChild(detailsEl);
 
@@ -4367,7 +4505,7 @@
 
     skipBtn.onclick = () => {
       _upchargeCleared = true;
-      statusEl.style.color = '#94a3b8';
+      statusEl.style.color = 'var(--sb-text-muted)';
       statusEl.textContent = 'Upcharge skipped — billed separately.';
       refresh();
     };
@@ -4385,9 +4523,9 @@
     panel.style.cssText = `
       all:initial;position:fixed;top:50%;left:50%;transform:translate(-110%, -50%);
       width:520px;max-height:80vh;overflow-y:auto;
-      background:#1e1e2e;color:#e2e8f0;font-family:Arial,sans-serif;font-size:var(--sb-fs-13);
-      border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,0.5);padding:14px;
-      z-index:10000001;border:1px solid rgba(255,255,255,0.1);box-sizing:border-box;
+      background:var(--sb-bg-panel);color:var(--sb-text);font-family:Arial,sans-serif;font-size:var(--sb-fs-13);
+      border-radius:10px;box-shadow:var(--sb-shadow);padding:14px;
+      z-index:10000001;border:1px solid var(--sb-border);box-sizing:border-box;
     `;
 
     // Header
@@ -4396,9 +4534,9 @@
     hdr.innerHTML = '<span style="font-weight:700;font-size:var(--sb-fs-14);">🔍 Product Search</span>';
     const closeBtn = document.createElement('button');
     closeBtn.textContent = 'Close \u2715';
-    closeBtn.style.cssText = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#94a3b8;font-size:var(--sb-fs-11);font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
-    closeBtn.onmouseenter = () => closeBtn.style.background = 'rgba(255,255,255,0.15)';
-    closeBtn.onmouseleave = () => closeBtn.style.background = 'rgba(255,255,255,0.08)';
+    closeBtn.style.cssText = 'background:var(--sb-control-bg);border:1px solid var(--sb-hover);color:var(--sb-text-muted);font-size:var(--sb-fs-11);font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
+    closeBtn.onmouseenter = () => closeBtn.style.background = 'var(--sb-hover)';
+    closeBtn.onmouseleave = () => closeBtn.style.background = 'var(--sb-control-bg)';
     closeBtn.onclick = () => panel.remove();
     hdr.appendChild(closeBtn);
     panel.appendChild(hdr);
@@ -4409,7 +4547,7 @@
     const searchInput = document.createElement('input');
     searchInput.type = 'text';
     searchInput.placeholder = 'Search by name...';
-    searchInput.style.cssText = 'flex:1;padding:7px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:#2a2a3e;color:#e2e8f0;font-size:var(--sb-fs-13);outline:none;box-sizing:border-box;';
+    searchInput.style.cssText = 'flex:1;padding:7px 10px;border-radius:6px;border:1px solid var(--sb-hover);background:var(--sb-bg-input);color:var(--sb-text);font-size:var(--sb-fs-13);outline:none;box-sizing:border-box;';
     const searchBtn = document.createElement('button');
     searchBtn.textContent = 'Search';
     searchBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:var(--sb-fs-13);cursor:pointer;';
@@ -4422,8 +4560,8 @@
 
     function doSearch() {
       const q = searchInput.value.trim();
-      if (!q || q.length < 2) { resultsEl.innerHTML = '<div style="color:#94a3b8;font-size:var(--sb-fs-12);">Type at least 2 characters.</div>'; return; }
-      resultsEl.innerHTML = '<div style="color:#94a3b8;font-size:var(--sb-fs-12);">Searching…</div>';
+      if (!q || q.length < 2) { resultsEl.innerHTML = '<div style="color:var(--sb-text-muted);font-size:var(--sb-fs-12);">Type at least 2 characters.</div>'; return; }
+      resultsEl.innerHTML = '<div style="color:var(--sb-text-muted);font-size:var(--sb-fs-12);">Searching…</div>';
 
       crmRequest({
         method: 'POST', url: GRAPHQL_URL,
@@ -4442,7 +4580,7 @@
             const products = json?.data?.productSuggestion?.data || [];
             const err = json?.data?.productSuggestion?.error?.message;
             if (err) { resultsEl.innerHTML = `<div style="color:#fca5a5;">${err}</div>`; return; }
-            if (!products.length) { resultsEl.innerHTML = '<div style="color:#94a3b8;font-size:var(--sb-fs-12);">No products found.</div>'; return; }
+            if (!products.length) { resultsEl.innerHTML = '<div style="color:var(--sb-text-muted);font-size:var(--sb-fs-12);">No products found.</div>'; return; }
             renderProductResults(products);
           } catch(e) {
             resultsEl.innerHTML = '<div style="color:#fca5a5;">Parse error.</div>';
@@ -4455,7 +4593,7 @@
     function renderProductResults(products) {
       resultsEl.innerHTML = '';
       const count = document.createElement('div');
-      count.style.cssText = 'color:#94a3b8;margin-bottom:8px;font-size:var(--sb-fs-11);';
+      count.style.cssText = 'color:var(--sb-text-muted);margin-bottom:8px;font-size:var(--sb-fs-11);';
       count.textContent = products.length + ' result(s)';
       resultsEl.appendChild(count);
 
@@ -4469,7 +4607,7 @@
         const col = document.createElement('div');
         col.style.cssText = 'flex:1;min-width:0;';
         const hdr = document.createElement('div');
-        hdr.style.cssText = 'font-size:var(--sb-fs-10);font-weight:600;color:#64748b;letter-spacing:0.05em;margin-bottom:6px;';
+        hdr.style.cssText = 'font-size:var(--sb-fs-10);font-weight:600;color:var(--sb-text-dim);letter-spacing:0.05em;margin-bottom:6px;';
         hdr.textContent = title;
         col.appendChild(hdr);
 
@@ -4486,7 +4624,7 @@
 
           const card = document.createElement('div');
           card.style.cssText = `
-            padding:6px 8px;margin-bottom:4px;border-radius:5px;background:#2a2a3e;
+            padding:6px 8px;margin-bottom:4px;border-radius:5px;background:var(--sb-bg-input);
             border:1px solid transparent;transition:0.15s;display:flex;justify-content:space-between;align-items:center;gap:6px;
           `;
           card.onmouseenter = () => card.style.borderColor = 'rgba(99,102,241,0.4)';
@@ -4496,7 +4634,7 @@
           leftCol.style.cssText = 'flex:1;min-width:0;';
 
           const nameEl = document.createElement('div');
-          nameEl.style.cssText = 'font-size:var(--sb-fs-11);font-weight:600;color:#e2e8f0;';
+          nameEl.style.cssText = 'font-size:var(--sb-fs-11);font-weight:600;color:var(--sb-text);';
           nameEl.textContent = info.name + ' by ' + info.brand;
           leftCol.appendChild(nameEl);
 
@@ -4562,7 +4700,7 @@
             if (vol) {
               const volTag = document.createElement('span');
               const volText = unit === 'oz' ? vol.toFixed(2) + 'oz' : vol + unit;
-              volTag.style.cssText = 'font-size:var(--sb-fs-10);color:#94a3b8;';
+              volTag.style.cssText = 'font-size:var(--sb-fs-10);color:var(--sb-text-muted);';
               volTag.textContent = '(' + volText + ')';
               lbl.appendChild(volTag);
             }
@@ -4644,7 +4782,7 @@
     // Items
     form.appendChild(makeLabel('ITEMS TO REPLACE'));
     const itemsWrap = document.createElement('div');
-    itemsWrap.style.cssText = 'background:#0f172a;border-radius:6px;padding:8px 10px;';
+    itemsWrap.style.cssText = 'background:var(--sb-bg-deep);border-radius:6px;padding:8px 10px;';
     const itemChecks = [];
 
     (order.orderItems || []).forEach(item => {
@@ -4663,7 +4801,7 @@
       row.style.cssText = 'margin-bottom:6px;';
 
       const lbl = document.createElement('label');
-      lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-12);color:#cbd5e1;flex-wrap:wrap;';
+      lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-12);color:var(--sb-text-secondary);flex-wrap:wrap;';
       const chk = document.createElement('input');
       chk.type = 'checkbox'; chk.checked = true;
       chk.style.cssText = 'cursor:pointer;accent-color:#818cf8;flex-shrink:0;';
@@ -4682,7 +4820,7 @@
         const starterRow = document.createElement('div');
         starterRow.style.cssText = 'margin-left:22px;margin-top:3px;';
         const sLbl = document.createElement('label');
-        sLbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-11);color:#94a3b8;';
+        sLbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-11);color:var(--sb-text-muted);';
         starterChk = document.createElement('input');
         starterChk.type = 'checkbox'; starterChk.checked = true;
         starterChk.style.cssText = 'cursor:pointer;accent-color:#818cf8;';
@@ -4715,17 +4853,17 @@
     const commentInput = document.createElement('textarea');
     commentInput.placeholder = 'Add a note...';
     commentInput.rows = 2;
-    commentInput.style.cssText = 'width:100%;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-12);box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;';
+    commentInput.style.cssText = 'width:100%;background:var(--sb-bg-deep);color:var(--sb-text);border:1px solid var(--sb-border);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-12);box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;';
     form.appendChild(commentInput);
 
     // Options
     form.appendChild(makeLabel('OPTIONS'));
     const optsWrap = document.createElement('div');
-    optsWrap.style.cssText = 'background:#0f172a;border-radius:6px;padding:8px 10px;display:flex;flex-direction:column;gap:6px;';
+    optsWrap.style.cssText = 'background:var(--sb-bg-deep);border-radius:6px;padding:8px 10px;display:flex;flex-direction:column;gap:6px;';
 
     function makeCheckRow(labelText, defaultChecked = false) {
       const lbl = document.createElement('label');
-      lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-12);color:#cbd5e1;';
+      lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-12);color:var(--sb-text-secondary);';
       const chk = document.createElement('input');
       chk.type = 'checkbox'; chk.checked = defaultChecked;
       chk.style.cssText = 'cursor:pointer;accent-color:#818cf8;';
@@ -4863,7 +5001,7 @@
               extra || null,
             ].filter(Boolean).join('\n');
 
-            statusEl.style.color = '#94a3b8';
+            statusEl.style.color = 'var(--sb-text-muted)';
             statusEl.textContent = 'Finding automated comment...';
 
             const postComment = () => {
@@ -5171,14 +5309,14 @@
         drop.style.cssText = `
           all:initial;position:fixed;z-index:9999999;
           top:${rect.bottom + 4}px;left:${rect.left}px;
-          background:#1e1e2e;border:1px solid rgba(255,255,255,0.15);border-radius:7px;
+          background:var(--sb-bg-panel);border:1px solid var(--sb-hover);border-radius:7px;
           box-shadow:0 8px 24px rgba(0,0,0,0.5);overflow:hidden;
           font-family:Arial,sans-serif;font-size:var(--sb-fs-12);min-width:120px;
         `;
 
         options.forEach(opt => {
           const row = document.createElement('div');
-          row.style.cssText = 'padding:8px 14px;cursor:pointer;color:#e2e8f0;';
+          row.style.cssText = 'padding:8px 14px;cursor:pointer;color:var(--sb-text);';
           row.textContent = opt.label;
           row.onmouseenter = () => row.style.background = 'rgba(99,102,241,0.25)';
           row.onmouseleave = () => row.style.background = '';
@@ -5297,7 +5435,7 @@
     _slashPicker = picker;
     picker.style.cssText = `
       all:initial;position:fixed;z-index:9999999;
-      background:#1e1e2e;border:1px solid rgba(255,255,255,0.15);border-radius:7px;
+      background:var(--sb-bg-panel);border:1px solid var(--sb-hover);border-radius:7px;
       box-shadow:0 8px 24px rgba(0,0,0,0.5);overflow:hidden;
       font-family:Arial,sans-serif;font-size:var(--sb-fs-12);min-width:200px;
     `;
@@ -5309,7 +5447,7 @@
     const rows = matches.map((v, i) => {
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:6px 12px;cursor:pointer;gap:16px;';
-      row.innerHTML = `<span style="color:#e2e8f0;font-weight:600;">[${v.key}]</span><span style="color:#64748b;font-size:var(--sb-fs-11);">${v.label}</span>`;
+      row.innerHTML = `<span style="color:var(--sb-text);font-weight:600;">[${v.key}]</span><span style="color:var(--sb-text-dim);font-size:var(--sb-fs-11);">${v.label}</span>`;
       row.addEventListener('mouseenter', () => { selected = i; highlight(); });
       row.addEventListener('mousedown', (e) => { e.preventDefault(); insertVariable(v.key); });
       return row;
@@ -5452,6 +5590,125 @@
       else startOktaLogin();
     });
     refreshOktaButtonState();
+    addToolbarButton('sb-settings-btn', '⚙', () => {
+      if (document.getElementById('sb-settings-panel')) { removePanel('sb-settings-panel'); return; }
+      showSettingsPanel();
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SETTINGS PANEL
+  // ══════════════════════════════════════════════════════════════════════════
+
+  function showSettingsPanel() {
+    const panel = createPanel({
+      id: 'sb-settings-panel',
+      title: '⚙ Settings',
+      width: 320,
+      maxHeight: 360,
+      centered: true,
+      noScale: true,
+    });
+
+    const s = getSettings();
+
+    // ── Theme toggle (segmented) ────────────────────────────────────────────
+    const themeLabel = document.createElement('div');
+    themeLabel.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-11);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;';
+    themeLabel.textContent = 'Theme';
+    panel.appendChild(themeLabel);
+
+    const themeRow = document.createElement('div');
+    themeRow.style.cssText = 'display:flex;gap:0;border:1px solid var(--sb-border);border-radius:6px;overflow:hidden;margin-bottom:14px;';
+    const makeThemeBtn = (key, label) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.dataset.theme = key;
+      b.style.cssText = 'flex:1;padding:7px;border:none;background:transparent;color:var(--sb-text);font-size:var(--sb-fs-12);font-weight:600;cursor:pointer;';
+      b.onclick = () => { setSettings({ theme: key }); paintTheme(); };
+      return b;
+    };
+    const darkBtn  = makeThemeBtn('dark',  '🌙 Dark');
+    const lightBtn = makeThemeBtn('light', '☀ Light');
+    themeRow.appendChild(darkBtn);
+    themeRow.appendChild(lightBtn);
+    panel.appendChild(themeRow);
+
+    const paintTheme = () => {
+      const cur = getSettings().theme;
+      [darkBtn, lightBtn].forEach(b => {
+        const active = b.dataset.theme === cur;
+        b.style.background = active ? 'var(--sb-control-bg)' : 'transparent';
+        b.style.color      = active ? 'var(--sb-text)'       : 'var(--sb-text-muted)';
+      });
+    };
+    paintTheme();
+
+    // ── Range slider helper ─────────────────────────────────────────────────
+    const makeRangeRow = (key, label, min, max, step, current, onInput) => {
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'margin-bottom:14px;';
+      const lbl = document.createElement('div');
+      lbl.style.cssText = 'display:flex;justify-content:space-between;color:var(--sb-text-muted);font-size:var(--sb-fs-11);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;';
+      const lblName = document.createElement('span');
+      lblName.textContent = label;
+      const lblVal = document.createElement('span');
+      lblVal.textContent = current.toFixed(2) + '×';
+      lblVal.style.color = 'var(--sb-text)';
+      lbl.appendChild(lblName); lbl.appendChild(lblVal);
+      wrap.appendChild(lbl);
+
+      const range = document.createElement('input');
+      range.type  = 'range';
+      range.min   = String(min);
+      range.max   = String(max);
+      range.step  = String(step);
+      range.value = String(current);
+      range.style.cssText = 'width:100%;accent-color:#6366f1;';
+      range.oninput = () => {
+        const v = parseFloat(range.value);
+        lblVal.textContent = v.toFixed(2) + '×';
+        onInput(v);
+      };
+      wrap.appendChild(range);
+      return wrap;
+    };
+
+    // ── Font scale ──────────────────────────────────────────────────────────
+    panel.appendChild(makeRangeRow('fontScale', 'Font size', 0.85, 1.4, 0.05, s.fontScale, (v) => {
+      setSettings({ fontScale: v });
+    }));
+
+    // ── Modal scale ─────────────────────────────────────────────────────────
+    panel.appendChild(makeRangeRow('modalScale', 'Window size', 0.9, 1.3, 0.05, s.modalScale, (v) => {
+      setSettings({ modalScale: v });
+    }));
+
+    // ── Reset / Done ────────────────────────────────────────────────────────
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;margin-top:6px;';
+
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = 'Reset';
+    resetBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid var(--sb-border);background:transparent;color:var(--sb-text-muted);font-size:var(--sb-fs-12);font-weight:600;cursor:pointer;';
+    resetBtn.onclick = () => {
+      setSettings(SETTINGS_DEFAULTS);
+      removePanel('sb-settings-panel');
+      showSettingsPanel();
+    };
+    btnRow.appendChild(resetBtn);
+
+    const spacer = document.createElement('div');
+    spacer.style.cssText = 'flex:1;';
+    btnRow.appendChild(spacer);
+
+    const doneBtn = document.createElement('button');
+    doneBtn.textContent = 'Done';
+    doneBtn.style.cssText = 'padding:7px 16px;border-radius:6px;border:none;background:#6366f1;color:#fff;font-size:var(--sb-fs-12);font-weight:700;cursor:pointer;';
+    doneBtn.onclick = () => removePanel('sb-settings-panel');
+    btnRow.appendChild(doneBtn);
+
+    panel.appendChild(btnRow);
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -5482,11 +5739,11 @@
 
     const bar = document.createElement('div');
     bar.id = 'sb-user-info-bar';
-    bar.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 10px;background:#0f172a;border-top:1px solid rgba(255,255,255,0.06);font-family:Arial,sans-serif;font-size:var(--sb-fs-11);';
+    bar.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 10px;background:var(--sb-bg-deep);border-top:1px solid var(--sb-border-soft);font-family:Arial,sans-serif;font-size:var(--sb-fs-11);';
 
     // Identity line: name · email · shipping address (above the tag groups)
     const idLine = document.createElement('div');
-    idLine.style.cssText = 'color:#94a3b8;';
+    idLine.style.cssText = 'color:var(--sb-text-muted);';
     const _u  = cachedCustomerCtx?.user;
     const _sh = cachedCustomerCtx?._shippingAddress;
     const _idParts = [];
@@ -5508,7 +5765,7 @@
 
     function makeGroup() {
       const g = document.createElement('div');
-      g.style.cssText = 'display:inline-flex;align-items:center;gap:4px;border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:2px 4px;';
+      g.style.cssText = 'display:inline-flex;align-items:center;gap:4px;border:1px solid var(--sb-control-bg);border-radius:6px;padding:2px 4px;';
       return g;
     }
 
@@ -5545,7 +5802,7 @@
         const mon = new Date(bdDate).toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }).toUpperCase();
         bdLabel = 'BD: ' + mon + ' ' + bdDay;
       }
-      group1.appendChild(makeTag(bdLabel, '#94a3b8', 'rgba(148,163,184,0.08)', 'rgba(148,163,184,0.2)'));
+      group1.appendChild(makeTag(bdLabel, 'var(--sb-text-muted)', 'rgba(148,163,184,0.08)', 'rgba(148,163,184,0.2)'));
     }
 
     // Gender tag from cache
@@ -5607,7 +5864,7 @@
       } else if (['HI', 'HAWAII'].includes(region)) {
         locationGroup.appendChild(makeTag('🌺 Hawaii', '#f472b6', 'rgba(244,114,182,0.1)', 'rgba(244,114,182,0.25)'));
       } else if (['AK', 'ALASKA'].includes(region)) {
-        locationGroup.appendChild(makeTag('🏔 Alaska', '#94a3b8', 'rgba(148,163,184,0.1)', 'rgba(148,163,184,0.25)'));
+        locationGroup.appendChild(makeTag('🏔 Alaska', 'var(--sb-text-muted)', 'rgba(148,163,184,0.1)', 'rgba(148,163,184,0.25)'));
       } else if (['PR', 'PUERTO RICO'].includes(region)) {
         locationGroup.appendChild(makeTag('🌴 Puerto Rico', '#34d399', 'rgba(52,211,153,0.1)', 'rgba(52,211,153,0.25)'));
       }
