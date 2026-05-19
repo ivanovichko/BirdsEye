@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.10.2
+// @version      8.10.3
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -195,7 +195,7 @@
   // SETTINGS — font scale, window scale, theme. Persisted in GM_setValue.
   // ══════════════════════════════════════════════════════════════════════════
   const SETTINGS_KEY = 'birdseye_settings';
-  const SETTINGS_DEFAULTS = { fontScale: 1.15, modalScale: 1.0, theme: 'dark' };
+  const SETTINGS_DEFAULTS = { fontScale: 1.15, modalScale: 1.0, theme: 'dark', hideTax: false, closeDelay: true };
   let MODAL_SCALE = SETTINGS_DEFAULTS.modalScale;   // mirror; createPanel/Modal read from this
 
   function getSettings() {
@@ -218,6 +218,59 @@
     MODAL_SCALE = s.modalScale;
   }
   applySettings(getSettings());
+
+  const BILL_TEMPLATES_KEY = 'birdseye_bill_templates';
+  const BILL_TEMPLATES_DEFAULTS = {
+    FIRST_SUBSCRIPTION:       '* {total} was your initial subscription payment for {month} ({price}{discStr}{taxClause});',
+    RECURRENT_CHARGE:         '* {total} was your monthly subscription payment for {month} ({price}{taxClause});',
+    RESUBSCRIBE:              '* {total} was your resubscription payment for {month} ({price}{taxClause});',
+    UPGRADE_PARTIAL:          '* {total} was a charge for upgrading your account ({price}{taxClause}).\nAs soon as you upgraded your plan, the difference in prices between the two plans was billed. Since all our subscriptions start out as a basic 1 fragrance/month and can be upgraded at any point, this transaction was applied as a separate charge;',
+    UPGRADE_FULL:             '* {total} was a charge for a full plan upgrade ({price}{taxClause}).\nWhen upgrading your subscription plan, the full amount for the new plan is billed immediately as a separate charge;',
+    PREMIUM_PRODUCT_UPCHARGE: '* {total} was a premium fragrance upcharge for including {name} in your order ({price}{taxClause}).\nSome fragrances on our website are part of a high-end lux collection and carry an upcharge of up to $25. They are marked by a tag in the left corner, and adding them to your queue triggers a pop-up with information about the extra cost;',
+    PERFUME_CASE_UPCHARGE:    '* {total} was a charge for including a Case Subscription add-on in your plan ({price}{taxClause}). With this, you get a different Fragrance Case sent to you together with each shipment;',
+    SHIPPING_UPCHARGE:        '* {total} was a shipping surcharge ({price}{taxClause});',
+    SAMPLES_UPCHARGE:         '* {total} was a charge for including a Samples subscription add-on in your order ({price}{taxClause}). With this add-on you get two 1.5ml samples with each order;',
+    CAR_SCENT_UPCHARGE:       '* {total} was a charge for your Drift Car scent add-on ({price}{taxClause}). With this add-on, you get a car fragrance in every order;',
+    CANDLE_UPCHARGE:          '* {total} was a charge for your Candle Club add-on ({price}{taxClause}). You get a Scented Candle included in every order with this add-on;',
+    HSD_UPCHARGE:             '* {total} was a charge for your Home Diffuser add-on ({price}{taxClause}). With this add-on you get a diffuser included in every order;',
+    SHIPPING_PURCHASE:        '* {total} was a charge for the shipping of your order ({price}{taxClause});',
+    ECOMMERCE_PURCHASE:       '* {total} was a charge for the separate Online Shop order you placed with us ({price}{discStr}{taxStr});',
+  };
+  const BILL_TEMPLATE_LABELS = {
+    FIRST_SUBSCRIPTION:       'First subscription',
+    RECURRENT_CHARGE:         'Monthly charge',
+    RESUBSCRIBE:              'Resubscription',
+    UPGRADE_PARTIAL:          'Partial plan upgrade',
+    UPGRADE_FULL:             'Full plan upgrade',
+    PREMIUM_PRODUCT_UPCHARGE: 'Premium product upcharge',
+    PERFUME_CASE_UPCHARGE:    'Case add-on',
+    SHIPPING_UPCHARGE:        'Shipping surcharge',
+    SAMPLES_UPCHARGE:         'Samples add-on',
+    CAR_SCENT_UPCHARGE:       'Car scent add-on',
+    CANDLE_UPCHARGE:          'Candle Club add-on',
+    HSD_UPCHARGE:             'Home Diffuser add-on',
+    SHIPPING_PURCHASE:        'Shipping purchase',
+    ECOMMERCE_PURCHASE:       'Online Shop order',
+  };
+
+  function getBillTemplates() {
+    try { return JSON.parse(GM_getValue(BILL_TEMPLATES_KEY) || 'null') || {}; }
+    catch(e) { return {}; }
+  }
+  function setBillTemplates(patch) {
+    GM_setValue(BILL_TEMPLATES_KEY, JSON.stringify(Object.assign(getBillTemplates(), patch)));
+  }
+  function applyBillTemplate(template, vars) {
+    return template.replace(/\{(\w+)\}/g, (_, k) => (k in vars ? vars[k] : '{' + k + '}'));
+  }
+  function autoClose(fn) {
+    if (getSettings().closeDelay) setTimeout(fn, 1800);
+    else fn();
+  }
+
+  if (!GM_getValue(BILL_TEMPLATES_KEY)) {
+    GM_setValue(BILL_TEMPLATES_KEY, JSON.stringify(BILL_TEMPLATES_DEFAULTS));
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // GLOBAL CSS — font-size, modal-size, and theme color variables.
@@ -603,7 +656,15 @@
         if (timedOut) return;
         GM_xmlhttpRequest({
           method: 'POST', url: GRAPHQL_URL,
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getAccessToken() },
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': 'Bearer ' + getAccessToken(),
+            'Origin':        'https://crm.scentbird.com',
+            'Referer':       'https://crm.scentbird.com/',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Dest': 'empty',
+          },
           data: JSON.stringify({ query: '{ __typename }' }),
           onload(res) {
             if (res.status !== 403) {
@@ -1884,54 +1945,27 @@
   // CHARGE EXPLANATION
   // ══════════════════════════════════════════════════════════════════════════
 
-  function lineItemExplanation(item, billingDate, currency) {
-    const t     = item.type;
-    const tax   = item.tax;
-    const disc  = item.discount;
-    const total = item.total;
-    const month = chargeMonthLabel(billingDate);
-    const taxStr   = tax > 0 ? ` (after ${fmtMoney(tax, currency)} for sales tax)` : '';
-    const discStr  = disc ? `, including a ${fmtMoney(disc, currency)} discount` : '';
-    const taxClause = tax > 0 ? ` + ${fmtMoney(tax, currency)} tax` : '';
+  function lineItemExplanation(item, billingDate, currency, hideTax) {
+    const t = item.type;
+    if (t === 'FAILED_CHARGE') return null;
 
-    switch (t) {
-      case 'FIRST_SUBSCRIPTION':
-        return `* ${fmtMoney(total, currency)} was your initial subscription payment for ${month} (${fmtMoney(item.price, currency)}${discStr}${taxClause});`;
-      case 'RECURRENT_CHARGE':
-        return `* ${fmtMoney(total, currency)} was your monthly subscription payment for ${month} (${fmtMoney(item.price, currency)}${taxClause});`;
-      case 'RESUBSCRIBE':
-        return `* ${fmtMoney(total, currency)} was your resubscription payment for ${month} (${fmtMoney(item.price, currency)}${taxClause});`;
-      case 'UPGRADE_PARTIAL':
-        return `* ${fmtMoney(total, currency)} was a charge for upgrading your account (${fmtMoney(item.price, currency)}${taxClause}).\nAs soon as you upgraded your plan, the difference in prices between the two plans was billed. Since all our subscriptions start out as a basic 1 fragrance/month and can be upgraded at any point, this transaction was applied as a separate charge;`;
-      case 'UPGRADE_FULL':
-        return `* ${fmtMoney(total, currency)} was a charge for a full plan upgrade (${fmtMoney(item.price, currency)}${taxClause}).\nWhen upgrading your subscription plan, the full amount for the new plan is billed immediately as a separate charge;`;
-      case 'PREMIUM_PRODUCT_UPCHARGE': {
-        const name = (item.description && item.description.toLowerCase() !== 'premium product')
-          ? item.description : 'a premium fragrance';
-        return `* ${fmtMoney(total, currency)} was a premium fragrance upcharge for including ${name} in your order (${fmtMoney(item.price, currency)}${taxClause}).\nSome fragrances on our website are part of a high-end lux collection and carry an upcharge of up to $25. They are marked by a tag in the left corner, and adding them to your queue triggers a pop-up with information about the extra cost;`;
-      }
-      case 'PERFUME_CASE_UPCHARGE':
-        return `* ${fmtMoney(total, currency)} was a charge for including a Case Subscription add-on in your plan (${fmtMoney(item.price, currency)}${taxClause}). With this, you get a different Fragrance Case sent to you together with each shipment;`;
-      case 'SHIPPING_CREDIT':
-      case 'SHIPPING_UPCHARGE':
-        return `* ${fmtMoney(total, currency)} was a shipping surcharge (${fmtMoney(item.price, currency)}${taxClause});`;
-      case 'SAMPLES_UPCHARGE':
-        return `* ${fmtMoney(total, currency)} was a charge for including a Samples subscription add-on in your order (${fmtMoney(item.price, currency)}${taxClause}). With this add-on you get two 1.5ml samples with each order;`;
-      case 'CAR_SCENT_UPCHARGE':
-        return `* ${fmtMoney(total, currency)} was a charge for your Drift Car scent add-on (${fmtMoney(item.price, currency)}${taxClause}). With this add-on, you get a car fragrance in every order;`;
-      case 'CANDLE_UPCHARGE':
-        return `* ${fmtMoney(total, currency)} was a charge for your Candle Club add-on (${fmtMoney(item.price, currency)}${taxClause}). You get a Scented Candle included in every order with this add-on;`;
-      case 'HSD_UPCHARGE':
-        return `* ${fmtMoney(total, currency)} was a charge for your Home Diffuser add-on (${fmtMoney(item.price, currency)}${taxClause}). With this add-on you get a diffuser included in every order;`;
-      case 'SHIPPING_PURCHASE':
-        return `* ${fmtMoney(total, currency)} was a charge for the shipping of your order (${fmtMoney(item.price, currency)}${taxClause});`;
-      case 'ECOMMERCE_PURCHASE':
-        return `* ${fmtMoney(total, currency)} was a charge for the separate Online Shop order you placed with us (${fmtMoney(item.price, currency)}${discStr}${taxStr});`;
-      case 'FAILED_CHARGE':
-        return null;
-      default:
-        return `* ${item.description || t} — ${fmtMoney(total, currency)}${taxStr}; [unknown type: ${t}]`;
-    }
+    const tax  = item.tax;
+    const disc = item.discount;
+    const vars = {
+      total:     fmtMoney(item.total, currency),
+      price:     fmtMoney(item.price, currency),
+      month:     chargeMonthLabel(billingDate),
+      taxClause: (!hideTax && tax  > 0) ? ` + ${fmtMoney(tax, currency)} tax` : '',
+      discStr:   disc ?    `, including a ${fmtMoney(disc, currency)} discount` : '',
+      taxStr:    (!hideTax && tax  > 0) ? ` (after ${fmtMoney(tax, currency)} for sales tax)` : '',
+      name:      (item.description && item.description.toLowerCase() !== 'premium product')
+                   ? item.description : 'a premium fragrance',
+    };
+
+    const key = t === 'SHIPPING_CREDIT' ? 'SHIPPING_UPCHARGE' : t;
+    const template = getBillTemplates()[key];
+    if (!template) return `* ${item.description || t} — ${vars.total}${vars.taxStr}; [unknown type: ${t}]`;
+    return applyBillTemplate(template, vars);
   }
 
   function buildBillExplanation(successEntry) {
@@ -1940,6 +1974,11 @@
     const items = charge.cashbirdDetails?.invoice?.lineItems || [];
     const billingDate = charge.paymentDate || successEntry.date;
     const currency = detectCurrency(items);
+
+    const country = (cachedCustomerCtx?.user?.userAddress?.shipping?.country || '').trim().toUpperCase();
+    const autoHide = country === 'CA' || country === 'CAN' || country === 'CANADA' ||
+                     country === 'GB' || country === 'UK'  || country === 'UNITED KINGDOM';
+    const hideTax = getSettings().hideTax || autoHide;
 
     // Fold standalone TAX line items (e.g. Colorado state tax) into the first
     // subscription-payment item so the bill reads as one charge with one tax figure.
@@ -1953,9 +1992,9 @@
       .map(i => {
         if (!absorbed && TAX_TARGETS.has(i.type)) {
           absorbed = true;
-          return lineItemExplanation({ ...i, tax: (i.tax || 0) + extraTax }, billingDate, currency);
+          return lineItemExplanation({ ...i, tax: (i.tax || 0) + extraTax }, billingDate, currency, hideTax);
         }
-        return lineItemExplanation(i, billingDate, currency);
+        return lineItemExplanation(i, billingDate, currency, hideTax);
       })
       .filter(Boolean);
 
@@ -2065,7 +2104,7 @@
 
     const results = document.createElement('div');
 
-    function renderUsers(users, headerText, target) {
+    function renderUsers(users, headerText, target, highlightTerm) {
       const container = target || results;
       if (!target) container.innerHTML = '';
       if (headerText) {
@@ -2083,7 +2122,11 @@
         `;
         if (filterActive && card.dataset.subStatus !== 'Active' && card.dataset.subStatus !== 'Unpaid' && card.dataset.subStatus !== 'OnHold') card.style.display = 'none';
         const s = user.userAddress?.shipping;
-        const addr = s ? [s.street1,s.street2,s.city,s.region,s.postcode].filter(Boolean).join(', ') : '';
+        const addrRaw = s ? [s.street1,s.street2,s.city,s.region,s.postcode].filter(Boolean).join(', ') : '';
+        const addr = (highlightTerm && addrRaw)
+          ? addrRaw.replace(new RegExp('(' + highlightTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'i'),
+              '<span style="color:var(--sb-accent);font-weight:700;">$1</span>')
+          : addrRaw;
         const subSt = user.subscription?.status || '';
         const subColor = subSt === 'Active' ? 'var(--sb-success-soft)' : subSt ? 'var(--sb-danger)' : 'var(--sb-text-dim)';
         let subLabel = subSt || 'No subscription';
@@ -2121,7 +2164,7 @@
             await new Promise(r => setTimeout(r, 500));
             cachedCustomerCtx = { email: user.email.trim().toLowerCase(), user, _kustomerId: getCustomerIdFromURL() };
             btn.textContent = '✔ Done'; btn.style.background = '#059669';
-            setTimeout(() => removePanel('sb-search-panel'), 1500);
+            autoClose(() => removePanel('sb-search-panel'));
             const fillBtn = document.getElementById('sb-fill-name-btn');
             if (fillBtn && !fillBtn.disabled) fillBtn.click();
           };
@@ -2254,7 +2297,7 @@
         sectionHdr.style.cssText = 'font-weight:700;font-size:var(--sb-fs-12);color:var(--sb-text-secondary);margin:12px 0 6px;';
         sectionHdr.textContent = `${label} (${byTier[tier].length})`;
         results.appendChild(sectionHdr);
-        renderUsers(byTier[tier], null, results);
+        renderUsers(byTier[tier], null, results, tier === 2 ? tier2[0] : '');
       });
     };
 
@@ -2665,7 +2708,7 @@
                       delBtn.disabled = false;
                       return;
                     }
-                    // Refresh the panel with fresh data
+                    mutPostComment(user.id, `Queue item removed: ${prodName} (${monthLabel})`, () => {});
                     removePanel('sb-queue-panel');
                     showQueuePanel(btn);
                   });
@@ -2997,9 +3040,9 @@
 
                 const pollForAutoComment = (attemptsLeft) => {
                   fetchComments(user.id, (comments) => {
-                    const autoComment = csOrderNumber
-                      ? comments.find(c => c.comment && c.comment.includes(csOrderNumber))
-                      : null;
+                    const autoComment = comments
+                      .filter(c => c.comment && c.comment.toLowerCase().includes('created a custom shipment'))
+                      .sort((a, b) => (b.created || 0) - (a.created || 0))[0] || null;
                     if (autoComment) {
                       confStatus.textContent = 'Removing automated comment...';
                       gqlMutate('deleteUserComment', DELETE_COMMENT_MUTATION, { id: autoComment.id },
@@ -3663,7 +3706,7 @@
                   if (!cachedCustomerCtx.user.subscription) cachedCustomerCtx.user.subscription = {};
                   cachedCustomerCtx.user.subscription.status = 'Cancelled';
                 }
-                setTimeout(() => removePanel('sb-cancel-panel'), 2000);
+                autoClose(() => removePanel('sb-cancel-panel'));
               });
             });
           });
@@ -3724,7 +3767,7 @@
                   delPmBtn.style.borderColor = 'var(--sb-success-soft)';
                   delPmBtn.style.cursor = 'default';
                   mutPostComment(user.id, 'Billing method removed', () => {});
-                  setTimeout(() => overlay.remove(), 1800);
+                  autoClose(() => overlay.remove());
                 }
               );
             },
@@ -3795,7 +3838,7 @@
                       delAccBtn.style.borderColor = 'var(--sb-success-soft)';
                       delAccBtn.style.cursor = 'default';
                       mutPostComment(user.id, 'Account deleted', () => {});
-                      setTimeout(() => overlay.remove(), 1800);
+                      autoClose(() => overlay.remove());
                     }
                   );
                 }
@@ -3891,7 +3934,7 @@
                     fraudBtn.disabled = false;
                     dlgStatus.style.color = 'var(--sb-success-soft)';
                     dlgStatus.textContent = '✔ Done!';
-                    setTimeout(() => overlay.remove(), 1200);
+                    autoClose(() => overlay.remove());
                   });
                 }
               );
@@ -4054,7 +4097,8 @@
         if (canRefund) {
           refBtn.onmouseenter = () => refBtn.style.background = '#6d28d9';
           refBtn.onmouseleave = () => refBtn.style.background = '#7c3aed';
-          const orderId = linkedOrder?.id || null;
+          const linkedStatus = (linkedOrder?.status || '').toUpperCase();
+          const orderId = linkedStatus === 'UPGRADED' ? null : (linkedOrder?.id || null);
           refBtn.onclick = () => showRefundConfirmDialog(user, charge, credits, shippingCredits, currency, totalCents, refBtn, block, orderId);
         }
         block.appendChild(refBtn);
@@ -4208,7 +4252,7 @@
             triggerBtn.textContent = '✔ Cancelled';
             triggerBtn.style.color = 'var(--sb-success-soft)';
             triggerBtn.style.borderColor = 'var(--sb-success-soft)';
-            setTimeout(() => overlay.remove(), 1800);
+            autoClose(() => overlay.remove());
           });
         });
       },
@@ -4277,6 +4321,36 @@
       box.appendChild(liWarn);
     }
 
+    // Upgraded order — must confirm which order to cancel before refund is allowed
+    const orders = charge?.orders || [];
+    const isUpgraded = (orders[0]?.status || '').toUpperCase() === 'UPGRADED';
+    let cancelCandidateId = null;
+    let cancelCandidateChk = null;
+    if (isUpgraded) {
+      const candidate = orders
+        .filter(o => (o.status || '').toUpperCase() !== 'UPGRADED')
+        .sort((a, b) => b.id - a.id)[0] || null;
+      const upgradeWarn = document.createElement('div');
+      upgradeWarn.style.cssText = 'background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:var(--sb-fs-11);color:var(--sb-warning-strong);';
+      if (candidate) {
+        cancelCandidateId = candidate.id;
+        const chkRow = document.createElement('label');
+        chkRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;';
+        cancelCandidateChk = document.createElement('input');
+        cancelCandidateChk.type = 'checkbox';
+        cancelCandidateChk.style.cssText = 'width:14px;height:14px;flex-shrink:0;cursor:pointer;accent-color:#f59e0b;';
+        const chkLabel = document.createElement('span');
+        const candidateStatus = (candidate.warehouseOrder?.data?.status || candidate.status || '').toUpperCase() || 'UNKNOWN';
+        chkLabel.innerHTML = `Original order was <strong>UPGRADED</strong>. Confirm cancel of order <strong>#${candidate.id}</strong> (${candidateStatus}) to proceed:`;
+        chkRow.appendChild(cancelCandidateChk);
+        chkRow.appendChild(chkLabel);
+        upgradeWarn.appendChild(chkRow);
+      } else {
+        upgradeWarn.textContent = '⚠ Original order was UPGRADED — no active order found to cancel. Verify manually before refunding.';
+      }
+      box.appendChild(upgradeWarn);
+    }
+
     const reasonLabel = makeLabel('Refund reason');
     reasonLabel.style.marginTop = '0';
     box.appendChild(reasonLabel);
@@ -4297,6 +4371,7 @@
       confirmColor: '#7c3aed',
       onCancel: () => overlay.remove(),
       onConfirm: (confirmBtn, cancelBtn) => {
+        if (cancelCandidateChk && !cancelCandidateChk.checked) return;
         confirmBtn.disabled = true;
         cancelBtn.disabled = true;
         reasonSel.disabled = true;
@@ -4339,7 +4414,7 @@
               refBtn.style.background = 'rgba(110,231,183,0.15)';
               refBtn.style.color = 'var(--sb-success-soft)';
               refBtn.style.cursor = 'not-allowed';
-              setTimeout(() => overlay.remove(), 1800);
+              autoClose(() => overlay.remove());
             };
 
             // Skip duplicate comment for same month
@@ -4374,10 +4449,11 @@
           }
         };
 
-        if (orderId) {
+        const effectiveOrderId = orderId || (cancelCandidateChk?.checked ? cancelCandidateId : null);
+        if (effectiveOrderId) {
           statusEl.style.color = 'var(--sb-text-muted)';
           statusEl.textContent = 'Cancelling order...';
-          mutCancelOrder(orderId, reason, (data, cancelErr) => {
+          mutCancelOrder(effectiveOrderId, reason, (data, cancelErr) => {
             if (cancelErr) {
               statusEl.style.color = 'var(--sb-danger)';
               statusEl.textContent = '✘ Cancel failed: ' + cancelErr;
@@ -4393,6 +4469,16 @@
         }
       },
     });
+    if (cancelCandidateChk) {
+      btns._confirmBtn.disabled = true;
+      btns._confirmBtn.style.opacity = '0.4';
+      btns._confirmBtn.style.cursor = 'not-allowed';
+      cancelCandidateChk.onchange = () => {
+        btns._confirmBtn.disabled = !cancelCandidateChk.checked;
+        btns._confirmBtn.style.opacity = cancelCandidateChk.checked ? '1' : '0.4';
+        btns._confirmBtn.style.cursor = cancelCandidateChk.checked ? 'pointer' : 'not-allowed';
+      };
+    }
     box.appendChild(btns);
   }
 
@@ -4543,8 +4629,9 @@
                 _upchargeCleared = true;
                 statusEl.style.color = 'var(--sb-success-soft)';
                 statusEl.textContent = '\u2714 Upcharge billed — $' + total;
+                const upchargeLines = itemChecks.filter(({ chk }) => chk.checked).map(({ item }) => { const pi = item.product?.productInfo || item.productInfo; const up = pi?.upchargePrice || 0; return up > 0 ? `${pi.name} by ${pi.brand} (+$${up})` : null; }).filter(Boolean); if (upchargeLines.length) { mutPostComment(userId, 'Premium upcharge billed: ' + upchargeLines.join(', '), () => {}); }
                 refresh();
-                setTimeout(() => overlay.remove(), 1800);
+                autoClose(() => overlay.remove());
               } else {
                 chargeStatus.style.color = 'var(--sb-danger)';
                 chargeStatus.textContent = '\u2718 Charge state: ' + state;
@@ -5072,7 +5159,7 @@
                     statusEl.textContent = '\u2714 Done!';
                   }
                   confirmBtn.textContent = '\u2714 Done';
-                  setTimeout(() => { form.remove(); document.getElementById('sb-product-search-panel')?.remove(); }, 2000);
+                  autoClose(() => { form.remove(); document.getElementById('sb-product-search-panel')?.remove(); });
                 }
               );
             };
@@ -5660,7 +5747,7 @@
       id: 'sb-settings-panel',
       title: '⚙ Settings',
       width: 320,
-      maxHeight: 360,
+      maxHeight: 480,
       centered: true,
       noScale: true,
     });
@@ -5739,6 +5826,57 @@
       setSettings({ modalScale: v });
     }));
 
+    // ── Close delay toggle ──────────────────────────────────────────────────
+    const delayRow = document.createElement('div');
+    delayRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;';
+    const delayLabel = document.createElement('div');
+    delayLabel.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-11);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;';
+    delayLabel.textContent = 'Delay window close on success';
+    const delayToggle = document.createElement('button');
+    const paintDelay = () => {
+      const on = getSettings().closeDelay;
+      delayToggle.textContent = on ? 'On' : 'Off';
+      delayToggle.style.cssText = `padding:4px 14px;border-radius:20px;border:none;font-size:var(--sb-fs-12);font-weight:700;cursor:pointer;
+        background:${on ? '#6366f1' : 'var(--sb-control-bg)'};color:${on ? '#fff' : 'var(--sb-text-muted)'};`;
+    };
+    paintDelay();
+    delayToggle.onclick = () => { setSettings({ closeDelay: !getSettings().closeDelay }); paintDelay(); };
+    delayRow.appendChild(delayLabel);
+    delayRow.appendChild(delayToggle);
+    panel.appendChild(delayRow);
+
+    // ── Hide tax toggle ─────────────────────────────────────────────────────
+    const taxRow = document.createElement('div');
+    taxRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;';
+    const taxLabel = document.createElement('div');
+    taxLabel.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-11);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;';
+    taxLabel.textContent = 'Hide tax in bill explanations';
+    const taxToggle = document.createElement('button');
+    const paintTax = () => {
+      const on = getSettings().hideTax;
+      taxToggle.textContent = on ? 'On' : 'Off';
+      taxToggle.style.cssText = `padding:4px 14px;border-radius:20px;border:none;font-size:var(--sb-fs-12);font-weight:700;cursor:pointer;
+        background:${on ? '#6366f1' : 'var(--sb-control-bg)'};color:${on ? '#fff' : 'var(--sb-text-muted)'};`;
+    };
+    paintTax();
+    taxToggle.onclick = () => { setSettings({ hideTax: !getSettings().hideTax }); paintTax(); };
+    taxRow.appendChild(taxLabel);
+    taxRow.appendChild(taxToggle);
+    panel.appendChild(taxRow);
+
+    // ── Bill Explanations ───────────────────────────────────────────────────
+    const billBtn = document.createElement('button');
+    billBtn.textContent = '✎ Edit Bill Explanations';
+    billBtn.style.cssText = `
+      width:100%;padding:8px;border-radius:6px;border:1px solid var(--sb-border);
+      background:transparent;color:var(--sb-text-muted);font-size:var(--sb-fs-12);
+      font-weight:600;cursor:pointer;text-align:left;margin-bottom:14px;
+    `;
+    billBtn.onmouseenter = () => billBtn.style.background = 'var(--sb-control-bg)';
+    billBtn.onmouseleave = () => billBtn.style.background = 'transparent';
+    billBtn.onclick = () => showBillTemplatesPanel();
+    panel.appendChild(billBtn);
+
     // ── Reset / Done ────────────────────────────────────────────────────────
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:8px;margin-top:6px;';
@@ -5764,6 +5902,103 @@
     btnRow.appendChild(doneBtn);
 
     panel.appendChild(btnRow);
+  }
+
+  function showBillTemplatesPanel() {
+    if (document.getElementById('sb-bill-templates-panel')) { removePanel('sb-bill-templates-panel'); return; }
+    const panel = createPanel({
+      id: 'sb-bill-templates-panel',
+      title: '✎ Bill Explanations',
+      width: 500,
+      maxHeight: 620,
+      centered: true,
+      draggable: true,
+    });
+
+    const legend = document.createElement('div');
+    legend.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-text-dim);margin-bottom:14px;line-height:1.6;';
+    legend.innerHTML = '<span style="color:var(--sb-text-muted);font-weight:700;">Placeholders:</span> ' +
+      ['{total}', '{price}', '{month}', '{taxClause}', '{discStr}', '{taxStr}', '{name}']
+        .map(p => `<code style="background:var(--sb-bg-deep);padding:1px 5px;border-radius:3px;font-size:var(--sb-fs-10);">${p}</code>`)
+        .join(' ');
+    panel.appendChild(legend);
+
+    const textareas = {};
+    const templates = getBillTemplates();
+
+    Object.keys(BILL_TEMPLATE_LABELS).forEach(key => {
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'margin-bottom:6px;border:1px solid var(--sb-border-soft);border-radius:6px;overflow:hidden;';
+
+      const header = document.createElement('div');
+      header.style.cssText = `
+        display:flex;justify-content:space-between;align-items:center;
+        padding:8px 10px;background:var(--sb-bg-deep);cursor:pointer;
+        font-size:var(--sb-fs-12);font-weight:600;color:var(--sb-text-secondary);
+        user-select:none;
+      `;
+      const chevron = document.createElement('span');
+      chevron.textContent = '▶';
+      chevron.style.cssText = 'font-size:9px;color:var(--sb-text-dim);transition:transform 0.15s;';
+      header.appendChild(document.createTextNode(BILL_TEMPLATE_LABELS[key]));
+      header.appendChild(chevron);
+
+      const body = document.createElement('div');
+      body.style.cssText = 'display:none;padding:8px;background:var(--sb-bg-row);';
+
+      const ta = document.createElement('textarea');
+      ta.value = templates[key] || BILL_TEMPLATES_DEFAULTS[key] || '';
+      ta.style.cssText = `
+        width:100%;box-sizing:border-box;min-height:72px;padding:7px;resize:vertical;
+        background:var(--sb-bg-input);color:var(--sb-text);border:1px solid var(--sb-border);
+        border-radius:4px;font-size:var(--sb-fs-12);line-height:1.5;font-family:inherit;
+      `;
+      textareas[key] = ta;
+      body.appendChild(ta);
+
+      header.onclick = () => {
+        const open = body.style.display !== 'none';
+        body.style.display = open ? 'none' : 'block';
+        chevron.style.transform = open ? '' : 'rotate(90deg)';
+      };
+
+      wrap.appendChild(header);
+      wrap.appendChild(body);
+      panel.appendChild(wrap);
+    });
+
+    const actionRow = document.createElement('div');
+    actionRow.style.cssText = 'display:flex;gap:8px;margin-top:14px;';
+
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = 'Reset to Defaults';
+    resetBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid var(--sb-border);background:transparent;color:var(--sb-text-muted);font-size:var(--sb-fs-12);font-weight:600;cursor:pointer;';
+    resetBtn.onclick = () => {
+      GM_setValue(BILL_TEMPLATES_KEY, JSON.stringify(BILL_TEMPLATES_DEFAULTS));
+      Object.keys(textareas).forEach(k => { textareas[k].value = BILL_TEMPLATES_DEFAULTS[k] || ''; });
+      resetBtn.textContent = '✔ Reset';
+      setTimeout(() => { resetBtn.textContent = 'Reset to Defaults'; }, 1500);
+    };
+
+    const spacer = document.createElement('div');
+    spacer.style.flex = '1';
+
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = 'Save';
+    saveBtn.style.cssText = 'padding:7px 20px;border-radius:6px;border:none;background:#6366f1;color:#fff;font-size:var(--sb-fs-12);font-weight:700;cursor:pointer;';
+    saveBtn.onclick = () => {
+      const patch = {};
+      Object.keys(textareas).forEach(k => { patch[k] = textareas[k].value; });
+      GM_setValue(BILL_TEMPLATES_KEY, JSON.stringify(patch));
+      saveBtn.textContent = '✔ Saved';
+      saveBtn.style.background = '#059669';
+      setTimeout(() => { saveBtn.textContent = 'Save'; saveBtn.style.background = '#6366f1'; }, 1500);
+    };
+
+    actionRow.appendChild(resetBtn);
+    actionRow.appendChild(spacer);
+    actionRow.appendChild(saveBtn);
+    panel.appendChild(actionRow);
   }
 
   // ══════════════════════════════════════════════════════════════════════════
