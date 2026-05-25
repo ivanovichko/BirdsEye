@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.10.3
+// @version      8.11.0
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -692,13 +692,6 @@
   // UTILITY HELPERS
   // ══════════════════════════════════════════════════════════════════════════
 
-  function setReactValue(input, value) {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(input, value);
-    input.dispatchEvent(new Event('input',  { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-
   function toProperCase(str) {
     if (!str) return str;
     return str.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
@@ -749,18 +742,6 @@
   function chargeMonthLabel(isoStr) {
     if (!isoStr) return '';
     return new Date(isoStr).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  }
-
-  function waitForField(selector, timeout = 4000) {
-    return new Promise((resolve) => {
-      if (document.querySelector(selector)) return resolve(document.querySelector(selector));
-      const obs = new MutationObserver(() => {
-        const el = document.querySelector(selector);
-        if (el) { obs.disconnect(); resolve(el); }
-      });
-      obs.observe(document.body, { childList: true, subtree: true });
-      setTimeout(() => { obs.disconnect(); resolve(null); }, timeout);
-    });
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1425,6 +1406,34 @@
     });
   }
 
+  // Run searchCRM across multiple terms grouped by tier, dedupe by user.id keeping
+  // the lowest (best) tier seen. Used by Find Other Accounts (search panel).
+  async function searchCRMTiered({ tier1, tier2, tier3, excludeId } = {}) {
+    const terms = [
+      ...(tier1 || []).map(t => ({ term: t, tier: 1 })),
+      ...(tier2 || []).map(t => ({ term: t, tier: 2 })),
+      ...(tier3 || []).map(t => ({ term: t, tier: 3 })),
+    ];
+    const seen = new Map();
+    for (const { term, tier } of terms) {
+      if (!term) continue;
+      await new Promise(resolve => {
+        searchCRM(term, (users, err) => {
+          if (!err && users?.length) {
+            users.forEach(u => {
+              if (excludeId && u.id === excludeId) return;
+              if (!seen.has(u.id)) seen.set(u.id, { user: u, tier });
+            });
+          }
+          resolve();
+        });
+      });
+    }
+    const byTier = { 1: [], 2: [], 3: [] };
+    seen.forEach(({ user, tier }) => byTier[tier].push(user));
+    return byTier;
+  }
+
   function fetchLastOrders(userId, callback) {
     if (!getAccessToken()) { return callback(null); }
     crmRequest({
@@ -2010,43 +2019,27 @@
   // APPLY USER (Kustomer modal)
   // ══════════════════════════════════════════════════════════════════════════
 
+  // Apply a CRM user to the current Kustomer customer: prepend the user's email
+  // (position 0 = "primary" / starred), keep other emails, fill name only if blank.
+  // Mirrors the Kustomer modal's Save payload — see Apply-to-Kustomer HAR recon.
   async function applyUser(user) {
     if (user.origin && user.origin !== 'SCENTBIRD') return;
+    const kustomerId = getCustomerIdFromURL();
+    if (!kustomerId) throw new Error('No Kustomer customer in URL');
+    const target = (user.email || '').trim();
+    if (!target) throw new Error('Target user has no email');
 
-    if (!document.querySelector('input[data-kt="customerModalEmailField"]')) {
-      document.querySelector('button[data-kt="customerTimelineEditCustomerProfileButton"]')?.click();
-    }
-    await waitForField('input[data-kt="customerModalEmailField"]');
-    await new Promise(r => setTimeout(r, 200));
+    const attrs = await kustomerGetCustomer(kustomerId);
+    const targetLc = target.toLowerCase();
+    const others = (attrs.emails || []).filter(e => (e.email || '').toLowerCase() !== targetLc);
+    attrs.emails = [{ type: 'home', email: target }, ...others];
 
-    const allFields = document.querySelectorAll('input[data-kt="customerModalEmailField"]');
-    const existingValues = Array.from(allFields).map(f => f.value.trim().toLowerCase());
-    const targetEmail = user.email.trim().toLowerCase();
-    const matchIndex = existingValues.indexOf(targetEmail);
-
-    if (matchIndex !== -1) {
-      document.querySelector(`button[data-kt="customerModalEmailField_star_${matchIndex}"]`)?.click();
-      await new Promise(r => setTimeout(r, 200));
-    } else {
-      const newIndex = allFields.length;
-      document.querySelector('button[data-kt="customerModalEmailField_addRow"]')?.click();
-      await new Promise(r => setTimeout(r, 300));
-
-      const updatedFields = document.querySelectorAll('input[data-kt="customerModalEmailField"]');
-      const newField = updatedFields[updatedFields.length - 1];
-      if (newField) { setReactValue(newField, user.email); await new Promise(r => setTimeout(r, 200)); }
-
-      document.querySelector(`button[data-kt="customerModalEmailField_star_${newIndex}"]`)?.click();
-      await new Promise(r => setTimeout(r, 200));
-    }
-
-    const nameField = document.querySelector('input[data-kt="customerModalNameField"]');
-    if (nameField && !nameField.value.trim()) {
+    if (!(attrs.name || '').trim()) {
       const full = toProperCase([user.firstName, user.lastName].filter(Boolean).join(' '));
-      if (full) { setReactValue(nameField, full); await new Promise(r => setTimeout(r, 200)); }
+      if (full) attrs.name = full;
     }
 
-    document.querySelector('button[data-kt="modalFooterBasic_buttonPrimary"]')?.click();
+    await kustomerPatchCustomer(kustomerId, attrs);
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -2160,13 +2153,20 @@
         } else {
           applyBtn.onclick = async (e) => {
             const btn = e.target; btn.textContent = '⏳ Applying…'; btn.disabled = true;
-            await applyUser(user);
-            await new Promise(r => setTimeout(r, 500));
-            cachedCustomerCtx = { email: user.email.trim().toLowerCase(), user, _kustomerId: getCustomerIdFromURL() };
-            btn.textContent = '✔ Done'; btn.style.background = '#059669';
-            autoClose(() => removePanel('sb-search-panel'));
-            const fillBtn = document.getElementById('sb-fill-name-btn');
-            if (fillBtn && !fillBtn.disabled) fillBtn.click();
+            try {
+              await applyUser(user);
+              cachedCustomerCtx = { email: user.email.trim().toLowerCase(), user, _kustomerId: getCustomerIdFromURL() };
+              btn.textContent = '✔ Done'; btn.style.background = '#059669';
+              autoClose(() => removePanel('sb-search-panel'));
+              const fillBtn = document.getElementById('sb-fill-name-btn');
+              if (fillBtn && !fillBtn.disabled) fillBtn.click();
+            } catch (err) {
+              const msg = err.message || 'Apply failed';
+              if (/Duplicate email/i.test(msg) && await offerMergeOnDuplicateError(btn, user)) return;
+              btn.textContent = '✘ ' + msg;
+              btn.style.background = 'var(--sb-danger-border)';
+              btn.disabled = false;
+            }
           };
         }
 
@@ -2248,39 +2248,17 @@
         return;
       }
 
-      const searchTerms = [
-        ...tier1.map(t => ({ term: t, tier: 1 })),
-        ...tier2.map(t => ({ term: t, tier: 2 })),
-        ...tier3.map(t => ({ term: t, tier: 3 })),
-      ];
-
-      // Run sequentially; track lowest (best) tier per user
-      const seen = new Map(); // id -> { user, tier }
-      for (const { term, tier } of searchTerms) {
-        await new Promise(resolve => {
-          searchCRM(term, (users, err) => {
-            if (!err && users?.length) {
-              users.forEach(u => {
-                if (u.id !== currentId && !seen.has(u.id)) seen.set(u.id, { user: u, tier });
-              });
-            }
-            resolve();
-          });
-        });
-      }
+      const byTier = await searchCRMTiered({ tier1, tier2, tier3, excludeId: currentId });
 
       findOtherBtn.disabled = false; findOtherBtn.textContent = '🔎 Find Other Accounts';
 
-      if (!seen.size) {
+      const total = byTier[1].length + byTier[2].length + byTier[3].length;
+      if (!total) {
         results.innerHTML = `<div style="color:var(--sb-text-muted);padding:8px 0;">No other accounts found.</div>`;
         return;
       }
 
-      const byTier = { 1: [], 2: [], 3: [] };
-      seen.forEach(({ user, tier }) => byTier[tier].push(user));
-
       results.innerHTML = '';
-      const total = seen.size;
       const summary = document.createElement('div');
       summary.style.cssText = 'color:var(--sb-text-muted);margin-bottom:8px;font-size:var(--sb-fs-12);';
       summary.textContent = `Found ${total} other account(s)`;
@@ -5208,56 +5186,59 @@
     addToolbarButton('sb-fill-name-btn', 'Fill Name', async (btn) => {
       const orig = btn.textContent;
       btn.textContent = '⏳'; btn.disabled = true;
+      const finish = (label, color) => {
+        btn.textContent = label;
+        btn.style.color = color || '';
+        setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; }, 2000);
+      };
 
-      // Open modal first — we need it for the name field anyway
-      if (!document.querySelector('input[data-kt="customerModalNameField"]')) {
-        document.querySelector('button[data-kt="customerTimelineEditCustomerProfileButton"]')?.click();
-      }
-      const nameField = await waitForField('input[data-kt="customerModalNameField"]');
-      // Give React a tick to populate the input value before we read it
-      await new Promise(r => setTimeout(r, 150));
+      const kustomerId = getCustomerIdFromURL();
+      if (!kustomerId) return finish('✘ No customer', 'var(--sb-danger)');
+
+      // Round-trip the full attribute block: PATCH is full-replace on the editable subset.
+      let attrs;
+      try { attrs = await kustomerGetCustomer(kustomerId); }
+      catch (e) { return finish('✘ ' + e.message, 'var(--sb-danger)'); }
 
       // Resolve customer from CRM if not cached
-      const startId = getCustomerIdFromURL();
+      const startId = kustomerId;
       const getUser = () => new Promise(async (resolve) => {
         if (cachedCustomerCtx?.user) return resolve(cachedCustomerCtx.user);
         const email = await resolveEmail();
-        if (getCustomerIdFromURL() !== startId) return resolve(null); // stale
+        if (getCustomerIdFromURL() !== startId) return resolve(null);
         if (!email) return resolve(null);
         searchCRM(email, (users, err) => {
-          if (getCustomerIdFromURL() !== startId) return resolve(null); // stale
+          if (getCustomerIdFromURL() !== startId) return resolve(null);
           if (err || !users?.length) return resolve(null);
           const sbUsers = users.filter(u => !u.origin || u.origin === 'SCENTBIRD');
           const exactMatch = sbUsers.find(u => u.email?.toLowerCase() === email.toLowerCase());
-          if (exactMatch) cachedCustomerCtx = { email, user: exactMatch, _kustomerId: getCustomerIdFromURL() };
+          if (exactMatch) cachedCustomerCtx = { email, user: exactMatch, _kustomerId: startId };
           resolve(exactMatch || null);
         });
       });
 
       const user = await getUser();
-      const name = user ? toProperCase([user.firstName, user.lastName].filter(Boolean).join(' ')) : null;
-      const trimmed = nameField?.value?.trim() || '';
+      const crmName = user ? toProperCase([user.firstName, user.lastName].filter(Boolean).join(' ')) : null;
+      const currentName = (attrs.name || '').trim();
 
-      if (name && nameField) {
-        setReactValue(nameField, name);
-        await new Promise(r => setTimeout(r, 300));
-        document.querySelector('button[data-kt="modalFooterBasic_buttonPrimary"]')?.click();
-        btn.textContent = '✔ Done'; btn.style.color = 'var(--sb-success-soft)';
-      } else if (nameField && trimmed) {
-        // Fallback: title-case the existing name (runs even if no CRM user / no token)
-        setReactValue(nameField, toProperCase(trimmed));
-        await new Promise(r => setTimeout(r, 300));
-        document.querySelector('button[data-kt="modalFooterBasic_buttonPrimary"]')?.click();
-        btn.textContent = '✔ Cased'; btn.style.color = 'var(--sb-warning)';
+      let newName, label, color;
+      if (crmName) {
+        newName = crmName;             label = '✔ Done';   color = 'var(--sb-success-soft)';
+      } else if (currentName) {
+        newName = toProperCase(currentName); label = '✔ Cased'; color = 'var(--sb-warning)';
       } else if (!getAccessToken() || _reauthRequired) {
-        // No name to fall back on AND no working token — surface the auth issue
-        document.querySelector('button[data-kt="modalFooterBasic_buttonCancel"]')?.click();
-        btn.textContent = '⚠ Sign in with Okta'; btn.style.color = 'var(--sb-danger)';
+        return finish('⚠ Sign in with Okta', 'var(--sb-danger)');
       } else {
-        document.querySelector('button[data-kt="modalFooterBasic_buttonCancel"]')?.click();
-        btn.textContent = '✘ Not Found'; btn.style.color = 'var(--sb-danger)';
+        return finish('✘ Not Found', 'var(--sb-danger)');
       }
-      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; }, 2000);
+
+      if (newName === attrs.name) return finish('✔ Already set', 'var(--sb-text-muted)');
+
+      attrs.name = newName;
+      try { await kustomerPatchCustomer(kustomerId, attrs); }
+      catch (e) { return finish('✘ ' + e.message, 'var(--sb-danger)'); }
+
+      finish(label, color);
     });
   }
 
@@ -6501,6 +6482,237 @@
       },
       onerror() { callback(null, 'Network error'); }
     });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // KUSTOMER CUSTOMER API — direct PATCH/merge/search for Fill Name & Apply.
+  // Replaces the old DOM-automation of Kustomer's Edit-Customer modal.
+  // The `_ai` prefix on a few helpers is a vestigial namespace; the functions
+  // are general Kustomer API plumbing.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  const KUSTOMER_API_BASE = 'https://scentbird.api.kustomerapp.com';
+  const KUSTOMER_VERSION  = 'release-v0.1.8258'; // bump if Kustomer rejects requests
+
+  // Kustomer's x-csrf-token isn't the _csrf cookie — it's a session token the app
+  // gets from a boot endpoint and attaches to every API call. Read it from
+  // localStorage.csrfToken (where Kustomer stashes it); fall back to sniffing
+  // Kustomer's own outbound fetch/XHR if storage is empty.
+  let _aiCapturedCsrf = null;
+  (function captureKustomerCsrf() {
+    const readToken = (headers) => {
+      if (!headers) return null;
+      if (typeof Headers !== 'undefined' && headers instanceof Headers) return headers.get('x-csrf-token');
+      if (Array.isArray(headers)) {
+        const p = headers.find(x => (x?.[0] || '').toLowerCase() === 'x-csrf-token');
+        return p ? p[1] : null;
+      }
+      for (const k of Object.keys(headers)) if (k.toLowerCase() === 'x-csrf-token') return headers[k];
+      return null;
+    };
+    const origFetch = window.fetch;
+    window.fetch = function(input, init) {
+      try {
+        const t = readToken(init?.headers) || readToken(input?.headers);
+        if (t) _aiCapturedCsrf = t;
+      } catch(e) {}
+      return origFetch.apply(this, arguments);
+    };
+    const origSetRH = XMLHttpRequest.prototype.setRequestHeader;
+    XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+      if (name && name.toLowerCase() === 'x-csrf-token' && value) _aiCapturedCsrf = value;
+      return origSetRH.apply(this, arguments);
+    };
+  })();
+
+  function _aiCsrf() {
+    try {
+      const stored = localStorage.getItem('csrfToken');
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          if (typeof parsed === 'string' && parsed) return parsed;
+        } catch(e) {}
+        return stored;
+      }
+    } catch(e) {}
+    return _aiCapturedCsrf || '';
+  }
+  async function _aiWaitForCsrf(timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const t = _aiCsrf();
+      if (t) return t;
+      await new Promise(r => setTimeout(r, 200));
+    }
+    return '';
+  }
+  function _aiUuid() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+      const r = Math.random() * 16 | 0;
+      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
+  function _aiHeaders() {
+    return {
+      'accept':                       'application/json',
+      'content-type':                 'application/json',
+      'x-csrf-token':                 _aiCsrf(),
+      'x-kustomer-client':            'web',
+      'x-kustomer-client-request-id': _aiUuid(),
+      'x-kustomer-version':           KUSTOMER_VERSION,
+    };
+  }
+
+  // Kustomer's Edit-Customer modal PATCHes a fixed subset of editable attributes,
+  // full-replace style. Sending fields outside this list (activeUsers, rev, etc.)
+  // risks 4xx or unintended mutation; sending fewer fields wipes them.
+  const KUSTOMER_PATCH_FIELDS = [
+    'phones', 'sharedPhones', 'whatsapps', 'sharedWhatsapps',
+    'emails', 'sharedEmails', 'socials', 'tiktoks', 'urls',
+    'locations', 'externalIds',
+    'name', 'company', 'externalId', 'defaultLang', 'timeZone', 'dedicatedUser', 'gender',
+  ];
+
+  async function kustomerGetCustomer(id) {
+    const res = await fetch(`${KUSTOMER_API_BASE}/v1/customers/${id}`, {
+      credentials: 'include', headers: _aiHeaders(),
+    });
+    if (!res.ok) throw new Error('Kustomer GET ' + res.status);
+    const attrs = (await res.json())?.data?.attributes;
+    if (!attrs) throw new Error('Kustomer GET: no attributes');
+    return attrs;
+  }
+
+  /** Locate Kustomer customers that already hold the given email. Mirrors the
+   *  search Kustomer's UI fires after a duplicate-email 409 (source=fetchDuplicateCustomer). */
+  async function kustomerSearchByEmail(email) {
+    const reqId = _aiUuid();
+    const url = `${KUSTOMER_API_BASE}/v1/customers/search?include=customers%2CsatisfactionResponse&page=1&pageSize=5&source=fetchDuplicateCustomer&trackTotalHits=10000&client-request-id=${reqId}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { ..._aiHeaders(), 'x-kustomer-client-request-id': reqId },
+      body: JSON.stringify({
+        or: [{ customer_email: { equals: (email || '').toLowerCase() } }],
+        starrocksMode: 'disabled',
+      }),
+    });
+    if (!res.ok) throw new Error('Kustomer search ' + res.status);
+    return (await res.json())?.data || [];
+  }
+
+  /** Fold `source` customer into `target`. After merge, source ceases to exist
+   *  and target retains a combined record. Used to resolve duplicate-email conflicts. */
+  async function kustomerMergeCustomers({ target, source }) {
+    const reqId = _aiUuid();
+    const url = `${KUSTOMER_API_BASE}/v1/customers/merges?client-request-id=${reqId}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { ..._aiHeaders(), 'x-kustomer-client-request-id': reqId },
+      body: JSON.stringify({ target, source }),
+    });
+    if (!res.ok) {
+      let detail = 'Kustomer merge ' + res.status;
+      try {
+        const j = await res.json();
+        if (j?.errors?.[0]?.detail) detail += ': ' + j.errors[0].detail;
+        console.warn('[BirdsEye] Kustomer merge error', res.status, j);
+      } catch(_) {}
+      throw new Error(detail);
+    }
+    return (await res.json())?.data;
+  }
+
+  /** When an Apply hits a duplicate-email 409, find the conflicting Kustomer
+   *  customer and rewire the Apply button into a two-stage Merge & retry control.
+   *  Returns true when handled (caller should NOT also show the duplicate error). */
+  async function offerMergeOnDuplicateError(btn, candidateUser) {
+    const targetEmail = (candidateUser?.email || '').trim().toLowerCase();
+    const currentId = getCustomerIdFromURL();
+    if (!targetEmail || !currentId) return false;
+
+    btn.disabled = true;
+    btn.textContent = '🔍 Finding conflict…';
+    btn.style.background = '#a16207';
+
+    let conflict;
+    try {
+      const list = await kustomerSearchByEmail(targetEmail);
+      conflict = (list || []).find(c => c.id !== currentId);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = '✘ Conflict lookup failed';
+      btn.style.background = 'var(--sb-danger-border)';
+      return true;
+    }
+    if (!conflict) {
+      btn.disabled = false;
+      btn.textContent = '✘ Duplicate but conflict not found';
+      btn.style.background = 'var(--sb-danger-border)';
+      return true;
+    }
+
+    let armed = false, armTimer = null;
+    const idleText = `🔗 Merge into ${conflict.id.slice(-6)} & retry`;
+    btn.disabled = false;
+    btn.textContent = idleText;
+    btn.title = `Conflicting Kustomer customer: ${conflict.id} (${conflict?.attributes?.displayName || ''})`;
+    btn.onclick = async () => {
+      if (!armed) {
+        armed = true;
+        btn.textContent = '⚠ Click again to merge';
+        btn.style.background = '#b45309';
+        armTimer = setTimeout(() => { armed = false; btn.textContent = idleText; btn.style.background = '#a16207'; }, 4000);
+        return;
+      }
+      clearTimeout(armTimer);
+      btn.disabled = true;
+      btn.textContent = '⏳ Merging…';
+      try {
+        // target = existing customer that already holds the email (preserves its history);
+        // source = current conversation's customer (gets folded in)
+        await kustomerMergeCustomers({ target: conflict.id, source: currentId });
+        btn.textContent = '✓ Merged';
+        btn.style.background = '#059669';
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = '✘ Merge failed: ' + e.message;
+        btn.style.background = 'var(--sb-danger-border)';
+      }
+    };
+    return true;
+  }
+
+  async function kustomerPatchCustomer(id, attrs) {
+    const reqId = _aiUuid();
+    const body = {};
+    for (const k of KUSTOMER_PATCH_FIELDS) body[k] = attrs[k] ?? null;
+    const res = await fetch(
+      `${KUSTOMER_API_BASE}/v1/customers/${id}?client-request-id=${reqId}`,
+      {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { ..._aiHeaders(), 'x-kustomer-client-request-id': reqId },
+        body: JSON.stringify(body),
+      },
+    );
+    if (!res.ok) {
+      let detail = 'Kustomer PATCH ' + res.status;
+      try {
+        const errBody = await res.json();
+        const e = errBody?.errors?.[0];
+        if (e?.code === 'duplicate' && e?.source?.parameter === 'email') {
+          detail = 'Duplicate email — already on another Kustomer customer. Merge manually.';
+        } else if (e?.detail) {
+          detail = `Kustomer ${res.status}: ${e.detail}`;
+        }
+        console.warn('[BirdsEye] Kustomer PATCH error', res.status, errBody);
+      } catch(_) {}
+      throw new Error(detail);
+    }
+    return (await res.json())?.data?.attributes;
   }
 
 })();
