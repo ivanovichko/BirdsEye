@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.11.1
+// @version      8.11.2
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -3702,7 +3702,6 @@
                   cachedCustomerCtx.user.subscription.status = 'Cancelled';
                 }
                 refreshOpenPanels('sb-cancel-panel');
-                autoClose(() => removePanel('sb-cancel-panel'));
               });
             });
           });
