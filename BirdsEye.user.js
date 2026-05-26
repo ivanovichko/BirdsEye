@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.11.0
+// @version      8.11.1
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -2050,6 +2050,13 @@
     document.getElementById(id)?.remove();
   }
 
+  /** Refresh any open panel that exposes a `_refresh()` method. No-op if the
+   *  panel isn't currently in the DOM. Callers pass the ids of panels whose
+   *  data was just mutated by an action (cancel, refund, shipment, replacement). */
+  function refreshOpenPanels(...ids) {
+    ids.forEach(id => document.getElementById(id)?._refresh?.());
+  }
+
   // ── Search Panel ──────────────────────────────────────────────────────────
 
   function showSearchPanel(prefill = '') {
@@ -2295,10 +2302,13 @@
     loadCustomer(btn, (result) => {
       if (!result) return;
       const { user } = result;
-      loadCustomerOrders(user.id, (rawOrders) => {
+      const panel = createPanel({ id: 'sb-order-panel', title: '📦 Last Orders', width: 380 });
+      function render() {
+        [...panel.children].slice(1).forEach(c => c.remove());
+        loadCustomerOrders(user.id, (rawOrders) => {
+        if (!document.getElementById('sb-order-panel')) return;
         // Hide upgraded orders — they are superseded shells that just clutter the list.
         const orders = (rawOrders || []).filter(o => (o.status || '').toUpperCase() !== 'UPGRADED');
-        const panel = createPanel({ id: 'sb-order-panel', title: '📦 Last Orders', width: 380 });
         // Identity + shipping address now live in the user info bar; no duplicate header here.
 
         if (!orders?.length) {
@@ -2373,6 +2383,9 @@
         csBtn.onclick = () => showCustomShipmentForm(user);
         panel.appendChild(csBtn);
       });
+      }
+      render();
+      panel._refresh = render;
     });
   }
 
@@ -3007,6 +3020,7 @@
                       confirmBtn.textContent = '\u2714 Created';
                       confirmBtn.style.background = 'rgba(110,231,183,0.15)';
                       confirmBtn.style.color = 'var(--sb-success-soft)';
+                      refreshOpenPanels('sb-order-panel');
                       setTimeout(() => {
                         confOverlay.remove();
                         form.remove();
@@ -3519,8 +3533,11 @@
     loadCustomer(btn, (result) => {
       if (!result) return;
       const { user } = result;
-      loadCustomerOrders(user.id, (orders) => {
-        const panel = createPanel({ id: 'sb-cancel-panel', title: '❌ Cancel Subscription', width: 320 });
+      const panel = createPanel({ id: 'sb-cancel-panel', title: '❌ Cancel Subscription', width: 320 });
+      function render() {
+        [...panel.children].slice(1).forEach(c => c.remove());
+        loadCustomerOrders(user.id, (orders) => {
+        if (!document.getElementById('sb-cancel-panel')) return;
 
         const subStatus = user.subscription?.status || '';
         const hasRecentSubOrder = (orders || []).some(o => o.type === 'SUBSCRIPTION' || !o.type);
@@ -3684,6 +3701,7 @@
                   if (!cachedCustomerCtx.user.subscription) cachedCustomerCtx.user.subscription = {};
                   cachedCustomerCtx.user.subscription.status = 'Cancelled';
                 }
+                refreshOpenPanels('sb-cancel-panel');
                 autoClose(() => removePanel('sb-cancel-panel'));
               });
             });
@@ -3922,6 +3940,9 @@
         };
         panel.appendChild(fraudBtn);
       });
+      }
+      render();
+      panel._refresh = render;
     });
   }
 
@@ -4230,6 +4251,7 @@
             triggerBtn.textContent = '✔ Cancelled';
             triggerBtn.style.color = 'var(--sb-success-soft)';
             triggerBtn.style.borderColor = 'var(--sb-success-soft)';
+            refreshOpenPanels('sb-cancel-panel', 'sb-order-panel');
             autoClose(() => overlay.remove());
           });
         });
@@ -4392,6 +4414,7 @@
               refBtn.style.background = 'rgba(110,231,183,0.15)';
               refBtn.style.color = 'var(--sb-success-soft)';
               refBtn.style.cursor = 'not-allowed';
+              refreshOpenPanels('sb-cancel-panel', 'sb-order-panel');
               autoClose(() => overlay.remove());
             };
 
@@ -5137,6 +5160,7 @@
                     statusEl.textContent = '\u2714 Done!';
                   }
                   confirmBtn.textContent = '\u2714 Done';
+                  refreshOpenPanels('sb-order-panel');
                   autoClose(() => { form.remove(); document.getElementById('sb-product-search-panel')?.remove(); });
                 }
               );
