@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.11.2
+// @version      8.11.3
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -1771,7 +1771,7 @@
     return lines.join('\n');
   }
 
-  const NON_REFUNDABLE_STATUSES = ["SHIPPED", "DELIVERED", "PRINTED", "DONE", "PROCESSED"];
+  const NON_REFUNDABLE_STATUSES = ["NEW", "SHIPPED", "DELIVERED", "PRINTED", "DONE", "PROCESSED"];
 
   function renderOrderBlock(order, compact = false, ctx = null, isReplacement = false) {
     const wrap = document.createElement('div');
