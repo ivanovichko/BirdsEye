@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.11.4
+// @version      8.11.5
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -5202,6 +5202,27 @@
   // FILL NAME (Button 1)
   // ══════════════════════════════════════════════════════════════════════════
 
+  // Kustomer's own save updates its header by feeding the PATCH response into its
+  // React store; our out-of-band PATCH can't reach that store, and Kustomer no
+  // longer pushes the change back over its websocket, so the header stays stale
+  // until a reload. Reflect the rename in the DOM directly: rewrite leaf elements
+  // whose entire text is the old name (specific enough to be safe — composite
+  // strings like "Conversation with <name>" are left alone). A later navigation
+  // re-fetches the same value, so this never drifts from the server.
+  function nudgeKustomerName(oldName, newName) {
+    const from = (oldName || '').trim();
+    const to   = (newName || '').trim();
+    if (!from || !to || from === to) return;  // nothing to do (incl. blank → first name)
+    let touched = 0;
+    document.querySelectorAll('body *').forEach(el => {
+      if (el.childElementCount === 0 && el.textContent.trim() === from) {
+        el.textContent = to;
+        touched++;
+      }
+    });
+    return touched;
+  }
+
   function registerFillName() {
     if (fillNameRegistered) return;
     fillNameRegistered = true;
@@ -5261,6 +5282,7 @@
       try { await kustomerPatchCustomer(kustomerId, attrs); }
       catch (e) { return finish('✘ ' + e.message, 'var(--sb-danger)'); }
 
+      try { nudgeKustomerName(currentName, newName); } catch (_) {}
       finish(label, color);
     });
   }
