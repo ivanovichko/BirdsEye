@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.11.3
+// @version      8.11.4
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -6515,38 +6515,61 @@
   // ══════════════════════════════════════════════════════════════════════════
 
   const KUSTOMER_API_BASE = 'https://scentbird.api.kustomerapp.com';
-  const KUSTOMER_VERSION  = 'release-v0.1.8258'; // bump if Kustomer rejects requests
 
-  // Kustomer's x-csrf-token isn't the _csrf cookie — it's a session token the app
-  // gets from a boot endpoint and attaches to every API call. Read it from
-  // localStorage.csrfToken (where Kustomer stashes it); fall back to sniffing
-  // Kustomer's own outbound fetch/XHR if storage is empty.
+  // Kustomer attaches a couple of headers to every API call that we can't derive
+  // ourselves: x-csrf-token (NOT the _csrf cookie — a separate session token from
+  // a boot endpoint) and x-kustomer-version (the live client build, which Kustomer
+  // bumps often and rejects stale values of). Sniff outbound fetch/XHR to capture
+  // both from Kustomer's own traffic, then reuse them on our requests.
   let _aiCapturedCsrf = null;
-  (function captureKustomerCsrf() {
-    const readToken = (headers) => {
+  let _aiCapturedVersion = null;
+  (function captureKustomerHeaders() {
+    const readHeader = (headers, name) => {
       if (!headers) return null;
-      if (typeof Headers !== 'undefined' && headers instanceof Headers) return headers.get('x-csrf-token');
+      if (typeof Headers !== 'undefined' && headers instanceof Headers) return headers.get(name);
       if (Array.isArray(headers)) {
-        const p = headers.find(x => (x?.[0] || '').toLowerCase() === 'x-csrf-token');
+        const p = headers.find(x => (x?.[0] || '').toLowerCase() === name);
         return p ? p[1] : null;
       }
-      for (const k of Object.keys(headers)) if (k.toLowerCase() === 'x-csrf-token') return headers[k];
+      for (const k of Object.keys(headers)) if (k.toLowerCase() === name) return headers[k];
       return null;
+    };
+    const captureFrom = (headers) => {
+      if (!headers) return;
+      const csrf = readHeader(headers, 'x-csrf-token');
+      if (csrf) _aiCapturedCsrf = csrf;
+      const ver = readHeader(headers, 'x-kustomer-version');
+      if (ver) _aiCapturedVersion = ver;
     };
     const origFetch = window.fetch;
     window.fetch = function(input, init) {
-      try {
-        const t = readToken(init?.headers) || readToken(input?.headers);
-        if (t) _aiCapturedCsrf = t;
-      } catch(e) {}
+      try { captureFrom(init?.headers); captureFrom(input?.headers); } catch(e) {}
       return origFetch.apply(this, arguments);
     };
     const origSetRH = XMLHttpRequest.prototype.setRequestHeader;
     XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
-      if (name && name.toLowerCase() === 'x-csrf-token' && value) _aiCapturedCsrf = value;
+      const n = (name || '').toLowerCase();
+      if (n === 'x-csrf-token' && value) _aiCapturedCsrf = value;
+      else if (n === 'x-kustomer-version' && value) _aiCapturedVersion = value;
       return origSetRH.apply(this, arguments);
     };
   })();
+
+  /** Current Kustomer client build = the x-kustomer-version the API expects.
+   *  Kustomer serves its JS bundles from a versioned path, e.g.
+   *    https://scentbird.kustomerapp.com/release-v0.1.8314/runtime.<hash>.js
+   *  so we read it straight out of the loaded <script> URLs — synchronous and
+   *  always current, with no hardcoded value to go stale (which is what broke
+   *  Fill Name). Falls back to a version sniffed off Kustomer's own traffic;
+   *  throws if neither is available rather than guessing a stale one. */
+  function _aiVersion() {
+    const scan = (urls) => urls.map(u => (String(u).match(/\/(release-v[\d.]+)\//) || [])[1]).find(Boolean);
+    const v = scan([...document.scripts].map(s => s.src))
+           || scan(performance.getEntriesByType('resource').map(e => e.name))
+           || _aiCapturedVersion;
+    if (!v) throw new Error('Kustomer version not found — reload the ticket and retry');
+    return v;
+  }
 
   function _aiCsrf() {
     try {
@@ -6583,7 +6606,7 @@
       'x-csrf-token':                 _aiCsrf(),
       'x-kustomer-client':            'web',
       'x-kustomer-client-request-id': _aiUuid(),
-      'x-kustomer-version':           KUSTOMER_VERSION,
+      'x-kustomer-version':           _aiVersion(),
     };
   }
 
