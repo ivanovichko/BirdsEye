@@ -7,7 +7,6 @@ Tampermonkey userscript for Scentbird CRM support agents. Single IIFE in `BirdsE
 - `@match https://scentbird.kustomerapp.com/*` — main toolbar/panels
 - `@match https://crm.scentbird.com/login/callback*` — Okta popup handler only
 - Default `@run-at` (idle). **Do not** add `document-start` — it caused infinite mutation-observer loops on Kustomer's React render.
-- Legacy companion `BirdsEye - Token Helper.user.js` is no longer referenced or installed.
 
 ## Auth (Okta SSO)
 
