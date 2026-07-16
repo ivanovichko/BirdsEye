@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.11.5
+// @version      8.11.7
 // @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -15,8 +15,9 @@
 // @connect      www.scentbird.com
 // @connect      api.scentbird.com
 // @connect      scentbird.okta.com
-// @updateURL    https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/BirdsEye.user.js
-// @downloadURL  https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/BirdsEye.user.js
+// Install-only: no @updateURL/@downloadURL. Cowork remints the artifact URL on
+// every upload and the git host serves clone/push only (no raw files), so there
+// is no stable URL for Tampermonkey autoupdate. Reinstall manually per release.
 // ==/UserScript==
 
 (function () {
@@ -69,6 +70,32 @@
   }
   function setPendingAuth(p) { GM_setValue(PENDING_AUTH_KEY, JSON.stringify(p)); }
   function clearPendingAuth() { GM_deleteValue(PENDING_AUTH_KEY); }
+
+  // POST to Okta's /token endpoint. Centralized so the code exchange and the refresh
+  // path share identical transport hardening:
+  //  - anonymous: no cookies. The public-client PKCE grant needs none, and cookie
+  //    mirroring is one signal Okta uses to classify a call as a browser request.
+  //  - Origin/Referer forced empty: Okta's /token browser guard ("Browser requests to
+  //    the token endpoint must be part of at least one whitelisted redirect_uri") only
+  //    fires when an Origin header is present. Chrome+Tampermonkey sends none, so this
+  //    is a no-op there; some managers (Firefox/Violentmonkey) mirror the tab origin,
+  //    and overriding to empty makes the manager omit it. Fallback if a manager still
+  //    sends it literally empty: register crm.scentbird.com as an Okta Trusted Origin.
+  function oktaTokenRequest(body, handlers) {
+    GM_xmlhttpRequest({
+      method: 'POST', url: OKTA_TOKEN,
+      anonymous: true,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept':       'application/json',
+        'Origin':       '',
+        'Referer':      '',
+      },
+      data: body,
+      onload:  handlers.onload,
+      onerror: handlers.onerror,
+    });
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // OAUTH CALLBACK HANDLER (runs in popup at crm.scentbird.com/login/callback)
@@ -141,10 +168,7 @@
       redirect_uri:  OKTA_REDIRECT_URI,
     }).toString();
 
-    GM_xmlhttpRequest({
-      method: 'POST', url: OKTA_TOKEN,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-      data: body,
+    oktaTokenRequest(body, {
       onload(res) {
         try {
           const json = JSON.parse(res.responseText);
@@ -429,10 +453,7 @@
     }).toString();
 
     _refreshInFlight = new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: 'POST', url: OKTA_TOKEN,
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-        data: body,
+      oktaTokenRequest(body, {
         onload(res) {
           try {
             const json = JSON.parse(res.responseText);
@@ -2319,6 +2340,20 @@
           return;
         }
 
+        // Pick mode: prompt the agent to click an order to complete a pending Fill.
+        if (_fillPickState) {
+          const hint = document.createElement('div');
+          hint.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;background:rgba(129,140,248,0.15);border:1px solid var(--sb-accent);border-radius:7px;padding:7px 10px;margin-bottom:10px;font-size:var(--sb-fs-12);color:var(--sb-text);';
+          const label = document.createElement('span');
+          label.textContent = '✏️ Pick an order to fill';
+          const cancel = document.createElement('span');
+          cancel.textContent = 'Cancel ✕';
+          cancel.style.cssText = 'cursor:pointer;color:var(--sb-text-muted);font-weight:600;';
+          cancel.onclick = cancelFillPick;
+          hint.appendChild(label); hint.appendChild(cancel);
+          panel.appendChild(hint);
+        }
+
         const subOrders = orders.filter(o => o.type === 'SUBSCRIPTION' || !o.type || o.type === 'MANUAL');
         const orderCtx = { user, totalOrders: subOrders.length };
 
@@ -2354,7 +2389,7 @@
               s.style.cssText = 'height:1px;background:var(--sb-border-soft);margin:8px 0;';
               panel.appendChild(s);
             }
-            panel.appendChild(renderOrderBlock(o, false, orderCtx, false));
+            panel.appendChild(pickWrap(renderOrderBlock(o, false, orderCtx, false), o));
           });
 
           g.replacements.forEach(r => {
@@ -2364,7 +2399,7 @@
             replLabel.style.cssText = 'font-size:var(--sb-fs-10);color:#7c3aed;font-weight:600;letter-spacing:0.05em;margin-bottom:4px;';
             replLabel.textContent = 'REPLACEMENT';
             nest.appendChild(replLabel);
-            nest.appendChild(renderOrderBlock(r, false, orderCtx, true));
+            nest.appendChild(pickWrap(renderOrderBlock(r, false, orderCtx, true), r));
             panel.appendChild(nest);
           });
         });
@@ -2827,7 +2862,7 @@
     searchProductBtn.onmouseleave = () => searchProductBtn.style.background = 'transparent';
     searchProductBtn.onclick = () => {
       if (noItems.parentNode) noItems.remove();
-      showProductSearchPanel(itemChecks, itemsWrap, () => csUpchargeUI.refresh());
+      showProductSearchPanel(itemChecks, itemsWrap, () => csUpchargeUI.refresh(), user.id);
     };
     searchRow.appendChild(searchProductBtn);
     form.appendChild(searchRow);
@@ -4655,7 +4690,7 @@
     return { el: wrap, refresh };
   }
 
-  function showProductSearchPanel(itemChecks, itemsWrap, onItemAdded) {
+  function showProductSearchPanel(itemChecks, itemsWrap, onItemAdded, userId) {
     const existingPanel = document.getElementById('sb-product-search-panel');
     if (existingPanel) { existingPanel.remove(); return; }
 
@@ -4711,7 +4746,10 @@
         data: JSON.stringify({
           operationName: 'productSuggestion',
           query: PRODUCT_SEARCH_QUERY,
-          variables: { input: { name: q, sections: ['Subscription', 'Extras', 'AddonSubscription'], statuses: ['LIVE', 'OUT_OF_STOCK', 'NOT_AVAILABLE_FOR_NEW_ORDERS'] } },
+          // userId scopes results to the customer's market/currency — without it the
+          // backend can return a legacy trading item that has no valid id, which
+          // makes replacementSave fail its trading-item lookup (e.g. fragrance cases).
+          variables: { input: { name: q, sections: ['Subscription', 'Extras', 'AddonSubscription'], statuses: ['LIVE', 'OUT_OF_STOCK', 'NOT_AVAILABLE_FOR_NEW_ORDERS'], userId } },
         }),
         onload(res) {
           if (res.status === 401) { handle401(); resultsEl.innerHTML = '<div style="color:var(--sb-danger);">Sign in required.</div>'; return; }
@@ -4822,7 +4860,10 @@
           addBtn.onmouseleave = () => addBtn.style.background = 'transparent';
           addBtn.onclick = () => {
             const fakeItem = {
-              id: product.id,
+              // Searched products aren't existing source-order line items, so their
+              // orderItem id must be null (matches CRM's own replacement payload);
+              // product.id carries the market-scoped trading item id from the search.
+              id: null,
               product: { id: product.id, status: product.status, productInfo: info },
             };
 
@@ -4986,7 +5027,7 @@
     searchProductBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid var(--sb-accent-strong);background:transparent;color:var(--sb-accent-strong);font-weight:600;font-size:var(--sb-fs-11);cursor:pointer;';
     searchProductBtn.onmouseenter = () => searchProductBtn.style.background = 'rgba(129,140,248,0.15)';
     searchProductBtn.onmouseleave = () => searchProductBtn.style.background = 'transparent';
-    searchProductBtn.onclick = () => showProductSearchPanel(itemChecks, itemsWrap, () => upchargeUI.refresh());
+    searchProductBtn.onclick = () => showProductSearchPanel(itemChecks, itemsWrap, () => upchargeUI.refresh(), user.id);
     searchRow.appendChild(searchProductBtn);
     form.appendChild(searchRow);
 
@@ -5119,10 +5160,17 @@
           }
           try {
             const json = JSON.parse(res.responseText);
-            const err = json?.data?.replacementSave?.error?.message;
-            if (err) {
+            // The backend can fail two ways: a business error inside
+            // replacementSave.error, or a top-level GraphQL `errors` array with
+            // replacementSave === null (e.g. "Could not find trading item \u2026" when
+            // a non-replaceable line item is included). Treat BOTH as failure, and
+            // require a saved id \u2014 otherwise the mutation silently no-ops and we
+            // falsely report success.
+            const err = json?.data?.replacementSave?.error?.message || json?.errors?.[0]?.message;
+            const savedId = json?.data?.replacementSave?.data?.id;
+            if (err || !savedId) {
               statusEl.style.color = 'var(--sb-danger)';
-              statusEl.textContent = '\u2718 ' + err;
+              statusEl.textContent = '\u2718 ' + (err || 'Replacement was not created (no confirmation from CRM).');
               confirmBtn.disabled = false;
               confirmBtn.textContent = 'Confirm Replacement';
               return;
@@ -5423,11 +5471,53 @@
     return count;
   }
 
-  function fillVariables(btn) {
-    // Remove existing dropdown if open
-    const existingDrop = document.getElementById('sb-fill-dropdown');
-    if (existingDrop) { existingDrop.remove(); return; }
+  // Fill "pick an order" state: set while the ✏️ Fill button waits for the agent
+  // to click an order in the Last Orders panel. Null = normal panel (unchanged).
+  let _fillPickState = null;
 
+  function _fillPickEsc(e) { if (e.key === 'Escape') cancelFillPick(); }
+
+  function enterFillPick(needed, btn) {
+    _fillPickState = { needed, btn };
+    document.addEventListener('keydown', _fillPickEsc, true);
+    // Open the panel if closed; otherwise re-render it into pick mode in place.
+    if (document.getElementById('sb-order-panel')) refreshOpenPanels('sb-order-panel');
+    else showLastOrderPanel(btn);
+  }
+
+  function cancelFillPick() {
+    if (!_fillPickState) return;
+    _fillPickState = null;
+    document.removeEventListener('keydown', _fillPickEsc, true);
+    refreshOpenPanels('sb-order-panel');
+  }
+
+  function resolveFillPick(order) {
+    if (!_fillPickState) return;
+    const { needed, btn } = _fillPickState;
+    _fillPickState = null;
+    document.removeEventListener('keydown', _fillPickEsc, true);
+    refreshOpenPanels('sb-order-panel');
+    doFill(btn, needed, order);
+  }
+
+  /** In pick mode, wrap an order block so the whole card is a click target with a
+   *  hover border; otherwise return it unchanged. */
+  function pickWrap(orderEl, order) {
+    if (!_fillPickState) return orderEl;
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:relative;border-radius:8px;cursor:pointer;';
+    wrap.appendChild(orderEl);
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:absolute;inset:0;border-radius:8px;border:2px solid transparent;';
+    ov.addEventListener('mouseenter', () => ov.style.borderColor = 'var(--sb-accent)');
+    ov.addEventListener('mouseleave', () => ov.style.borderColor = 'transparent');
+    ov.addEventListener('click', () => resolveFillPick(order));
+    wrap.appendChild(ov);
+    return wrap;
+  }
+
+  function fillVariables(btn) {
     const composer = getComposer();
     if (!composer) {
       const orig = btn.textContent;
@@ -5445,70 +5535,14 @@
       return;
     }
 
-    // Fetch orders to build dropdown with real month labels
-    const origText = btn.textContent;
-    btn.textContent = '⏳'; btn.disabled = true;
-
-    loadCustomer(btn, (result) => {
-      if (!result) { btn.textContent = origText; btn.disabled = false; return; }
-      const { user } = result;
-
-      loadCustomerOrders(user.id, (orders) => {
-        btn.textContent = origText; btn.disabled = false;
-
-        const mainOrders = (orders || []).filter(o => o.type !== 'REPLACEMENT' && o.type !== 'REPLACEMENT_ORDER');
-        const monthNames = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-
-        const options = mainOrders.slice(0, 3).map((o, i) => {
-          const label = o.month && o.year
-            ? monthNames[o.month - 1] + '-' + String(o.year).slice(2)
-            : 'Order ' + (i + 1);
-          return { label, index: i };
-        });
-
-        if (!options.length) {
-          options.push({ label: 'No orders found', index: 0 });
-        }
-
-        // Show dropdown
-        const rect = btn.getBoundingClientRect();
-        const drop = document.createElement('div');
-        drop.id = 'sb-fill-dropdown';
-        drop.style.cssText = `
-          all:initial;position:fixed;z-index:9999999;
-          top:${rect.bottom + 4}px;left:${rect.left}px;
-          background:var(--sb-bg-panel);border:1px solid var(--sb-hover);border-radius:7px;
-          box-shadow:0 8px 24px rgba(0,0,0,0.5);overflow:hidden;
-          font-family:Arial,sans-serif;font-size:var(--sb-fs-12);min-width:120px;
-        `;
-
-        options.forEach(opt => {
-          const row = document.createElement('div');
-          row.style.cssText = 'padding:8px 14px;cursor:pointer;color:var(--sb-text);';
-          row.textContent = opt.label;
-          row.onmouseenter = () => row.style.background = 'rgba(99,102,241,0.25)';
-          row.onmouseleave = () => row.style.background = '';
-          row.onclick = () => {
-            drop.remove();
-            doFill(btn, needed, opt.index);
-          };
-          drop.appendChild(row);
-        });
-
-        document.body.appendChild(drop);
-
-        const closeHandler = (e) => {
-          if (!drop.contains(e.target) && e.target !== btn) {
-            drop.remove();
-            document.removeEventListener('mousedown', closeHandler, true);
-          }
-        };
-        setTimeout(() => document.addEventListener('mousedown', closeHandler, true), 0);
-      });
-    });
+    // Order-dependent tokens need a specific order. Instead of a cramped dropdown,
+    // let the agent pick it directly in the Last Orders panel.
+    const needsOrder = needed.some(v => ['MONTH','DATE','FRAGRANCE','TRACKING'].includes(v.key));
+    if (!needsOrder) { doFill(btn, needed, null); return; }
+    enterFillPick(needed, btn);
   }
 
-  function doFill(btn, needed, orderIndex) {
+  function doFill(btn, needed, pickedOrder) {
     const orig = btn.textContent;
     btn.textContent = '⏳'; btn.disabled = true;
     const restore = (label, color) => {
@@ -5569,11 +5603,16 @@
       };
 
       if (needsOrder) {
-        loadCustomerOrders(user.id, (orders) => {
-          const mainOrders = (orders || []).filter(o => o.type !== 'REPLACEMENT' && o.type !== 'REPLACEMENT_ORDER');
-          const order = mainOrders[orderIndex] || mainOrders[0] || null;
-          afterOrders(order);
-        });
+        // pickedOrder comes straight from the Last Orders panel; fall back to the
+        // most recent main order if somehow absent.
+        if (pickedOrder) {
+          afterOrders(pickedOrder);
+        } else {
+          loadCustomerOrders(user.id, (orders) => {
+            const mainOrders = (orders || []).filter(o => o.type !== 'REPLACEMENT' && o.type !== 'REPLACEMENT_ORDER');
+            afterOrders(mainOrders[0] || null);
+          });
+        }
       } else {
         afterOrders(null);
       }
@@ -6055,7 +6094,17 @@
 
     const bar = document.createElement('div');
     bar.id = 'sb-user-info-bar';
-    bar.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 10px;background:var(--sb-bg-deep);border-top:1px solid var(--sb-border-soft);font-family:Arial,sans-serif;font-size:var(--sb-fs-11);';
+    bar.style.cssText = 'position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 30px 4px 10px;background:var(--sb-bg-deep);border-top:1px solid var(--sb-border-soft);font-family:Arial,sans-serif;font-size:var(--sb-fs-11);';
+
+    // Manual refresh — re-fetches subscription + shipping address and re-renders.
+    const refreshBtn = document.createElement('button');
+    refreshBtn.textContent = '⟳';
+    refreshBtn.title = 'Refresh info bar';
+    refreshBtn.style.cssText = 'position:absolute;top:4px;right:8px;background:var(--sb-control-bg);border:1px solid var(--sb-border-soft);color:var(--sb-text-muted);border-radius:5px;cursor:pointer;font-size:var(--sb-fs-13);line-height:1;padding:2px 6px;';
+    refreshBtn.onmouseenter = () => refreshBtn.style.color = 'var(--sb-text)';
+    refreshBtn.onmouseleave = () => refreshBtn.style.color = 'var(--sb-text-muted)';
+    refreshBtn.onclick = () => { refreshBtn.textContent = '⏳'; refreshSubscriptionBar(); };
+    bar.appendChild(refreshBtn);
 
     // Identity line: name · email · shipping address (above the tag groups)
     const idLine = document.createElement('div');
