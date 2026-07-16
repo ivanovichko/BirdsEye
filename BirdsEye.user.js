@@ -75,12 +75,17 @@
   // path share identical transport hardening:
   //  - anonymous: no cookies. The public-client PKCE grant needs none, and cookie
   //    mirroring is one signal Okta uses to classify a call as a browser request.
-  //  - Origin/Referer forced empty: Okta's /token browser guard ("Browser requests to
-  //    the token endpoint must be part of at least one whitelisted redirect_uri") only
-  //    fires when an Origin header is present. Chrome+Tampermonkey sends none, so this
-  //    is a no-op there; some managers (Firefox/Violentmonkey) mirror the tab origin,
-  //    and overriding to empty makes the manager omit it. Fallback if a manager still
-  //    sends it literally empty: register crm.scentbird.com as an Okta Trusted Origin.
+  //  - Origin/Referer pinned to the CRM origin: Okta's /token browser guard ("Browser
+  //    requests to the token endpoint must be part of at least one whitelisted
+  //    redirect_uri") keys on the Origin VALUE, not merely its presence — it must match
+  //    the origin of a whitelisted redirect_uri. Tampermonkey strips Origin on
+  //    cross-origin GM_xmlhttpRequest, so its call reads as a native request and passes.
+  //    Violentmonkey (Edge/MV3) leaves a non-matching origin on the request (e.g.
+  //    chrome-extension://…), which Okta rejects. Pinning Origin to the CRM origin — the
+  //    same one crmRequest sends, and the origin of our whitelisted redirect_uri —
+  //    satisfies the guard on managers that forward Origin, and is a whitelisted value
+  //    for any that strip-then-set it. Fallback if a manager still fails: register
+  //    crm.scentbird.com as an Okta Trusted Origin.
   function oktaTokenRequest(body, handlers) {
     GM_xmlhttpRequest({
       method: 'POST', url: OKTA_TOKEN,
@@ -88,8 +93,8 @@
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept':       'application/json',
-        'Origin':       '',
-        'Referer':      '',
+        'Origin':       'https://crm.scentbird.com',
+        'Referer':      'https://crm.scentbird.com/',
       },
       data: body,
       onload:  handlers.onload,
