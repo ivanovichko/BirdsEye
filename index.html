@@ -447,7 +447,7 @@
 
   <!-- FOOTER -->
   <footer class="footer">
-    <p>from agents, to agents &nbsp;·&nbsp; <a href="https://github.com/ivanovichko/BirdsEye" target="_blank" rel="noopener">github</a></p>
+    <p>from agents, to agents &nbsp;·&nbsp; <a href="https://git.scentbird.tech/trzisp20/birdseye" target="_blank" rel="noopener">git</a></p>
   </footer>
 
 </div>
@@ -456,7 +456,11 @@
 /* =========================================================================
    INSTALL FLOW — single-step Tampermonkey userscript install
    ========================================================================= */
-const BIRDSEYE_URL = 'https://raw.githubusercontent.com/ivanovichko/BirdsEye/main/BirdsEye.user.js';
+// Note: the trailing ".user.js" is what makes Tampermonkey intercept and show the
+// install prompt (it keys off the URL suffix, not content-type). Cowork ignores the
+// suffix and still serves the script. Cowork remints this slug on every upload —
+// update this URL each release.
+const BIRDSEYE_URL = 'https://cowork.scentbird.tech/1b8wins8/birdseye-core.user.js';
 
 const installBtn   = document.getElementById('installBtn');
 const progressEl   = document.getElementById('installProgress');

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      8.11.7
-// @description  Unified toolbar: Fill Name + CRM Search + Last Orders + Recent Charges
+// @version      9.0.0
+// @description  Unified toolbar for Scentbird support: CRM search, orders, charges, queue, edit / downgrade / cancel, replacements, refunds, Specials (OT, account deletion)
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
 // @match        https://crm.scentbird.com/login/callback*
@@ -15,6 +15,8 @@
 // @connect      www.scentbird.com
 // @connect      api.scentbird.com
 // @connect      scentbird.okta.com
+// @connect      a1.asendiausa.com
+// @connect      a1reportapi.asendiaprod.com
 // Install-only: no @updateURL/@downloadURL. Cowork remints the artifact URL on
 // every upload and the git host serves clone/push only (no raw files), so there
 // is no stable URL for Tampermonkey autoupdate. Reinstall manually per release.
@@ -22,6 +24,7 @@
 
 (function () {
   'use strict';
+  try { document.documentElement.dataset.sbBeta = '8.35.0-beta'; } catch (_) {}
 
   // ══════════════════════════════════════════════════════════════════════════
   // OKTA / OAUTH CONSTANTS
@@ -224,7 +227,35 @@
   // SETTINGS — font scale, window scale, theme. Persisted in GM_setValue.
   // ══════════════════════════════════════════════════════════════════════════
   const SETTINGS_KEY = 'birdseye_settings';
-  const SETTINGS_DEFAULTS = { fontScale: 1.15, modalScale: 1.0, theme: 'dark', hideTax: false, closeDelay: true };
+  const SETTINGS_DEFAULTS = {
+    fontScale: 1.15, modalScale: 1.0, theme: 'dark', hideTax: false, closeDelay: true, aiMode: false,
+    // AI panel collapsed to its title bar (the caret in its header).
+    aiCollapsed: false,
+    // Whether the model's prose summary is expanded in the AI panel.
+    aiSummaryOpen: true,
+    // Where the agent last dropped the AI panel, {left, top}. null = centred.
+    aiPanelPos: null,
+    // CCPA cancellation macro — paste a Kustomer shortcut "edit" link; we read the
+    // shortcut id from it. Defaults to the known Cancel-My-Subscription macro.
+    ccpaShortcut: 'https://scentbird.kustomerapp.com/app/settings/shortcuts/6980de563330d0a608e17abf/edit',
+    // CCPA-loc — the reply used when the email matches no CRM account, so there is no
+    // subscription to cancel and we have to ask which account they mean.
+    ccpaLocShortcut: '',
+    // AI reply macros — per cancellation/refund flow, a Kustomer shortcut link the
+    // "Approve" action applies as the reply. Keyed by flow name (see AI_ACTIONS).
+    aiFlowShortcuts: {},
+  };
+
+  /** Extract a 24-hex Kustomer id from a shortcut link (or a bare id). '' if none. */
+  function parseShortcutId(v) {
+    const m = String(v || '').match(/[0-9a-f]{24}/i);
+    return m ? m[0] : '';
+  }
+  /** CCPA cancellation-macro shortcut id (from settings). */
+  function getCcpaShortcutId() { return parseShortcutId(getSettings().ccpaShortcut); }
+  /** CCPA-loc shortcut id — the no-account-found reply. */
+  function getCcpaLocShortcutId() { return parseShortcutId(getSettings().ccpaLocShortcut); }
+
   let MODAL_SCALE = SETTINGS_DEFAULTS.modalScale;   // mirror; createPanel/Modal read from this
 
   function getSettings() {
@@ -285,9 +316,6 @@
   function getBillTemplates() {
     try { return JSON.parse(GM_getValue(BILL_TEMPLATES_KEY) || 'null') || {}; }
     catch(e) { return {}; }
-  }
-  function setBillTemplates(patch) {
-    GM_setValue(BILL_TEMPLATES_KEY, JSON.stringify(Object.assign(getBillTemplates(), patch)));
   }
   function applyBillTemplate(template, vars) {
     return template.replace(/\{(\w+)\}/g, (_, k) => (k in vars ? vars[k] : '{' + k + '}'));
@@ -377,6 +405,38 @@
         --sb-tag-emerald-fg:     #34d399;
         --sb-tag-emerald-bg:     rgba(52,211,153,0.1);
         --sb-tag-emerald-border: rgba(52,211,153,0.25);
+
+        /* Solid button fills — white text on a colored ground. Distinct from the
+           accent tokens above, which are FOREGROUND colors on a dark panel. A solid
+           has to stay dark enough for white text in BOTH themes, so most of these
+           are not flipped below. The -hi suffix is a base's hover/armed partner. */
+        --sb-solid-primary:     #4f46e5;
+        --sb-solid-primary-hi:  #4338ca;
+        --sb-solid-primary-lo:  #6366f1;
+        --sb-solid-violet:      #7c3aed;
+        --sb-solid-violet-hi:   #6d28d9;
+        --sb-solid-violet-dim:  rgba(124,58,237,0.2);
+        --sb-solid-danger-hi:   #b91c1c;
+        --sb-solid-warn:        #a16207;
+        --sb-solid-warn-hi:     #b45309;
+        --sb-solid-success:     #059669;
+        --sb-solid-disabled:    #374151;
+        --sb-warning-hi:        #d97706;
+        --sb-plaque-orange:     #f97316;
+        --sb-plaque-yellow:     #eab308;
+        --sb-on-solid:          #ffffff;
+        /* Amber is too light for white text — the one solid that inverts. */
+        --sb-on-warning:        #000000;
+
+        /* Note/alert surfaces — the four bespoke rgba() boxes, unified. */
+        --sb-note-warn-bg:      rgba(245,158,11,0.10);
+        --sb-note-warn-border:  rgba(245,158,11,0.35);
+        --sb-note-danger-bg:    rgba(239,68,68,0.10);
+        --sb-note-danger-border:rgba(239,68,68,0.35);
+        --sb-note-info-bg:      rgba(96,165,250,0.10);
+        --sb-note-info-border:  rgba(96,165,250,0.30);
+        --sb-badge-ai-bg:       rgba(99,102,241,0.20);
+        --sb-badge-ai-border:   rgba(99,102,241,0.30);
       }
 
       /* Light theme — Kustomer-soft palette */
@@ -430,7 +490,195 @@
         --sb-tag-emerald-fg:     #047857;
         --sb-tag-emerald-bg:     rgba(4,120,87,0.14);
         --sb-tag-emerald-border: rgba(4,120,87,0.4);
+
+        /* Solids mostly carry over — they are already dark enough for white text on
+           a white panel. The exception is the armed danger fill: light's
+           --sb-danger-border is already #b91c1c, so reusing it would make arming
+           invisible. Push it darker instead. */
+        --sb-solid-danger-hi:   #7f1d1d;
+        --sb-solid-disabled:    #9ca3af;
+        --sb-warning-hi:        #92400e;
+        --sb-plaque-orange:     #c2410c;
+        --sb-plaque-yellow:     #a16207;
+
+        --sb-note-warn-bg:      rgba(180,83,9,0.10);
+        --sb-note-warn-border:  rgba(180,83,9,0.35);
+        --sb-note-danger-bg:    rgba(185,28,28,0.10);
+        --sb-note-danger-border:rgba(185,28,28,0.35);
+        --sb-note-info-bg:      rgba(29,78,216,0.10);
+        --sb-note-info-border:  rgba(29,78,216,0.30);
+        --sb-badge-ai-bg:       rgba(79,70,229,0.14);
+        --sb-badge-ai-border:   rgba(79,70,229,0.35);
       }
+
+      /* Collapsed panel — header only. Done in CSS rather than by walking children
+         in JS because a panel's body is appended AFTER createPanel returns, so a
+         one-shot JS pass would miss everything and re-collapsing on each append is
+         a footgun. The rule applies to whatever is in the panel at any moment.
+         Bottom padding/margin collapse too, so the result is a tight title bar. */
+      [data-sb-collapsed="1"] > *:not([data-sb-panel-header]) { display: none !important; }
+      [data-sb-collapsed="1"] { padding-bottom: 0 !important; overflow: hidden !important; }
+      [data-sb-collapsed="1"] > [data-sb-panel-header] { margin-bottom: 0 !important; border-bottom: none !important; }
+
+      /* ══ COMPONENT LAYER ═══════════════════════════════════════════════════
+         Everything is scoped under .sb-ui — the class every panel/modal/overlay
+         root carries. That gives 0,2,0 specificity, which beats Kustomer's own
+         element and single-class rules; a bare .sb-btn would lose to them.
+
+         Panel roots set all:initial inline to stop CSS bleed, but that only
+         resets the root itself — descendants still inherit Kustomer's font and
+         are still reachable by its selectors. So every interactive base rule
+         re-states font/box-sizing/margin/appearance rather than trusting them.
+
+         Hover lives here, not in JS. The ~39 onmouseenter/onmouseleave pairs
+         this replaces all did the same thing: swap between two constants. */
+
+      .sb-ui .sb-btn {
+        font: inherit; box-sizing: border-box; margin: 0; appearance: none;
+        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        padding: 7px 12px; border-radius: 6px;
+        border: 1px solid var(--sb-hover);
+        background: var(--sb-control-bg);
+        color: var(--sb-text);
+        font-size: var(--sb-fs-12); font-weight: 600; line-height: 1.2;
+        white-space: nowrap; cursor: pointer; text-align: center;
+        transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+      }
+      .sb-ui .sb-btn:hover:not(:disabled) { background: var(--sb-hover); }
+      .sb-ui .sb-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+      /* Sizes */
+      .sb-ui .sb-btn--xs { padding: 3px 9px;  font-size: var(--sb-fs-10); }
+      .sb-ui .sb-btn--sm { padding: 5px 10px; font-size: var(--sb-fs-11); }
+      .sb-ui .sb-btn--lg { padding: 9px 14px; font-size: var(--sb-fs-13); }
+
+      /* Shapes */
+      .sb-ui .sb-btn--pill  { border-radius: 20px; }
+      .sb-ui .sb-btn--block { display: flex; width: 100%; }
+      .sb-ui .sb-btn--grow  { flex: 1; min-width: 0; }
+
+      /* Solid fills. Each pins its own hover so the generic rule above can't
+         wash it out with --sb-hover. */
+      .sb-ui .sb-btn--primary { background: var(--sb-solid-primary); border-color: transparent; color: var(--sb-on-solid); font-weight: 700; }
+      .sb-ui .sb-btn--primary:hover:not(:disabled) { background: var(--sb-solid-primary-hi); }
+      .sb-ui .sb-btn--violet  { background: var(--sb-solid-violet);  border-color: transparent; color: var(--sb-on-solid); font-weight: 700; }
+      .sb-ui .sb-btn--violet:hover:not(:disabled)  { background: var(--sb-solid-violet-hi); }
+      .sb-ui .sb-btn--danger  { background: var(--sb-danger-border); border-color: transparent; color: var(--sb-on-solid); font-weight: 700; }
+      .sb-ui .sb-btn--danger:hover:not(:disabled)  { background: var(--sb-solid-danger-hi); }
+      .sb-ui .sb-btn--success { background: var(--sb-solid-success); border-color: transparent; color: var(--sb-on-solid); font-weight: 700; }
+      .sb-ui .sb-btn--success:hover:not(:disabled) { background: var(--sb-solid-success); }
+      .sb-ui .sb-btn--warn    { background: var(--sb-solid-warn);    border-color: transparent; color: var(--sb-on-solid); font-weight: 700; }
+      .sb-ui .sb-btn--warn:hover:not(:disabled)    { background: var(--sb-solid-warn-hi); }
+
+      /* Armed — the second click of a two-stage destructive control. Set as a
+         state class so the button's resting variant survives underneath it. */
+      .sb-ui .sb-btn--sent, .sb-ui .sb-btn--sent:disabled {
+        background: var(--sb-solid-success); border-color: transparent;
+        color: var(--sb-on-solid); opacity: 1; cursor: default;
+      }
+
+      .sb-ui .sb-btn--armed         { background: var(--sb-solid-danger-hi) !important; color: var(--sb-on-solid) !important; border-color: transparent !important; }
+      .sb-ui .sb-btn--armed-warn    { background: var(--sb-solid-warn-hi)   !important; color: var(--sb-on-solid) !important; border-color: transparent !important; }
+
+      /* Outline — a solid's colour on a transparent ground. */
+      /* For buttons whose fill is a runtime parameter and therefore inline: an
+         inline background beats any rule here, so darken it with a filter instead. */
+      .sb-ui .sb-btn--tinted:hover:not(:disabled) { filter: brightness(0.85); }
+
+      .sb-ui .sb-btn--ghost    { background: transparent; border-color: var(--sb-border); color: var(--sb-text-muted); }
+      .sb-ui .sb-btn--ghost:hover:not(:disabled) { background: var(--sb-control-bg); }
+      .sb-ui .sb-btn--outline  { background: transparent; border-color: var(--sb-accent-strong); color: var(--sb-accent); }
+      .sb-ui .sb-btn--outline:hover:not(:disabled) { background: var(--sb-control-bg); }
+
+      /* ── Notes / alerts ─────────────────────────────────────────────────── */
+      .sb-ui .sb-note {
+        box-sizing: border-box; padding: 8px 10px; border-radius: 6px;
+        font-size: var(--sb-fs-11); line-height: 1.45;
+        border: 1px solid transparent;
+        background: var(--sb-bg-row); color: var(--sb-text-muted);
+      }
+      .sb-ui .sb-note--warn   { background: var(--sb-note-warn-bg);   border-color: var(--sb-note-warn-border);   color: var(--sb-warning-strong); }
+      .sb-ui .sb-note--danger { background: var(--sb-note-danger-bg); border-color: var(--sb-note-danger-border); color: var(--sb-danger); }
+      .sb-ui .sb-note--info   { background: var(--sb-note-info-bg);   border-color: var(--sb-note-info-border);   color: var(--sb-info); }
+
+      /* ── Text ───────────────────────────────────────────────────────────── */
+      .sb-ui .sb-label {
+        font-size: var(--sb-fs-10); color: var(--sb-text-muted); font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px;
+      }
+      .sb-ui .sb-hint  { font-size: var(--sb-fs-10); color: var(--sb-text-dim); }
+      .sb-ui .sb-hint--warn { color: var(--sb-warning-strong); }
+      .sb-ui .sb-badge {
+        font-size: var(--sb-fs-10); padding: 1px 5px; border-radius: 3px;
+        background: var(--sb-badge-ai-bg); color: var(--sb-accent);
+        border: 1px solid var(--sb-badge-ai-border); white-space: nowrap;
+      }
+      .sb-ui .sb-divider { height: 1px; background: var(--sb-border-soft); margin: 10px 0; border: 0; }
+      .sb-ui .sb-card    { background: var(--sb-bg-row); border-radius: 6px; padding: 8px 10px; }
+
+      /* ── Inputs ─────────────────────────────────────────────────────────── */
+      .sb-ui .sb-input, .sb-ui .sb-select, .sb-ui .sb-textarea {
+        font: inherit; box-sizing: border-box; margin: 0;
+        width: 100%; padding: 6px 9px; border-radius: 6px;
+        border: 1px solid var(--sb-border);
+        background: var(--sb-bg-input); color: var(--sb-text);
+        font-size: var(--sb-fs-12);
+      }
+      .sb-ui .sb-input:focus, .sb-ui .sb-select:focus, .sb-ui .sb-textarea:focus {
+        outline: none; border-color: var(--sb-accent-strong);
+      }
+      .sb-ui .sb-select   { cursor: pointer; }
+      .sb-ui .sb-textarea { resize: vertical; font-family: Arial, sans-serif; }
+      .sb-ui .sb-check    { cursor: pointer; accent-color: var(--sb-accent-strong); flex-shrink: 0; margin: 0; }
+
+      /* ── Selectable rows (order picker, item picker, product results) ───── */
+      .sb-ui .sb-choice {
+        display: flex; align-items: center; gap: 8px; box-sizing: border-box;
+        width: 100%; text-align: left;
+        padding: 7px 9px; border-radius: 6px; margin-bottom: 4px;
+        background: transparent; border: 1px solid transparent;
+        font-size: var(--sb-fs-11); color: var(--sb-text); cursor: pointer;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .sb-ui .sb-choice:hover { border-color: var(--sb-border); }
+      .sb-ui .sb-choice[data-checked="1"] { background: var(--sb-bg-row); border-color: var(--sb-border); }
+      .sb-ui .sb-choice--top { align-items: flex-start; }
+      .sb-ui .sb-choice--top .sb-check { margin-top: 2px; }
+
+      /* Two-line choice body: bold identity on top, dim detail under it. */
+      .sb-ui .sb-choice-body { min-width: 0; flex: 1; }
+      .sb-ui .sb-choice-main { font-size: var(--sb-fs-12); font-weight: 700; color: var(--sb-text); }
+      .sb-ui .sb-choice-sub  { font-size: var(--sb-fs-10); color: var(--sb-text-dim); }
+      .sb-ui .sb-truncate    { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+      /* ── Layout ─────────────────────────────────────────────────────────── */
+      /* ── make* family ───────────────────────────────────────────────────── */
+      .sb-ui .sb-copy {
+        background: none; border: none; margin: 0; font: inherit;
+        padding: 0 4px; color: var(--sb-accent-strong);
+        font-size: var(--sb-fs-13); cursor: pointer; flex-shrink: 0;
+      }
+      .sb-ui .sb-form-label {
+        font-size: var(--sb-fs-12); color: var(--sb-text-dim);
+        font-weight: 600; letter-spacing: 0.05em; margin: 12px 0 5px;
+      }
+      /* The forms' select predates .sb-select and sits a size larger on a deeper
+         ground. Kept as a modifier rather than normalised away, so Phase 1 stays
+         a pure re-plumbing with no visual diff. */
+      .sb-ui .sb-select--form { background: var(--sb-bg-deep); border-radius: 5px; padding: 6px 8px; font-size: var(--sb-fs-13); }
+      .sb-ui .sb-status    { font-size: var(--sb-fs-12); min-height: 16px; margin-top: 10px; color: var(--sb-text-muted); }
+      .sb-ui .sb-statuslog { margin-top: 10px; font-size: var(--sb-fs-11); line-height: 1.8; }
+      .sb-ui .sb-tag {
+        display: inline-flex; align-items: center; padding: 2px 7px;
+        border-radius: 4px; font-weight: 600; font-size: var(--sb-fs-10); white-space: nowrap;
+      }
+      .sb-ui .sb-toolbar-btn { padding: 5px 12px; border-radius: 4px; font-size: var(--sb-fs-13); }
+
+      /* ── Layout ─────────────────────────────────────────────────────────── */
+      .sb-ui .sb-row       { display: flex; align-items: center; gap: 8px; }
+      .sb-ui .sb-row--gap6 { gap: 6px; }
+      .sb-ui .sb-spread    { justify-content: space-between; }
+      .sb-ui .sb-fill      { flex: 1; min-width: 0; }
     `;
     (document.head || document.documentElement).appendChild(style);
   })();
@@ -774,11 +1022,74 @@
   // UI FACTORIES — shared overlay / modal / panel / helpers
   // ══════════════════════════════════════════════════════════════════════════
 
+  /** Build an element in one call. `cls` names classes from the component layer
+   *  in the stylesheet above; `style` is for the genuinely one-off bits that do
+   *  not deserve a class (a computed width, a colour from trackingStatusColor).
+   *  Prefer cls — an inline style beats every rule in the sheet, including :hover.
+   *
+   *    el('button', { cls: 'sb-btn sb-btn--primary', text: 'Approve', on: { click } })
+   *    el('div',    { cls: 'sb-row' }, [left, right])
+   */
+  function el(tag, opts = {}, children = []) {
+    const node = document.createElement(tag);
+    if (opts.cls)   node.className = opts.cls;
+    if (opts.id)    node.id = opts.id;
+    if (opts.text  != null) node.textContent = opts.text;
+    if (opts.html  != null) node.innerHTML = opts.html;
+    if (opts.title != null) node.title = opts.title;
+    if (opts.style) node.style.cssText = opts.style;
+    if (opts.attrs) for (const k of Object.keys(opts.attrs)) {
+      const v = opts.attrs[k];
+      if (v === false || v == null) continue;
+      node.setAttribute(k, v === true ? '' : v);
+    }
+    if (opts.data) for (const k of Object.keys(opts.data)) node.dataset[k] = opts.data[k];
+    if (opts.props) Object.assign(node, opts.props);
+    if (opts.on) for (const k of Object.keys(opts.on)) node.addEventListener(k, opts.on[k]);
+    for (const c of [].concat(children)) if (c) node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    return node;
+  }
+
+  /** Two-stage destructive button: first click arms, second fires, and it
+   *  disarms itself after `armMs`. Replaces four hand-rolled copies of the same
+   *  timer + colour dance (Approve, Send, merge-on-duplicate, cancel-sub), which
+   *  had drifted to three different arm colours and two different timeouts. */
+  function armedButton(btn, { idle, armed = '⚠ Click again', armMs = 4000, armedCls = 'sb-btn--armed', onArm, onFire }) {
+    let isArmed = false, timer = null;
+    const rest = () => {
+      isArmed = false;
+      btn.textContent = idle;
+      btn.classList.remove(armedCls);
+      clearTimeout(timer);
+    };
+    btn.textContent = idle;
+    btn.addEventListener('click', async () => {
+      if (!isArmed) {
+        isArmed = true;
+        btn.textContent = armed;
+        btn.classList.add(armedCls);
+        timer = setTimeout(rest, armMs);
+        try { onArm?.(); } catch (_) {}
+        return;
+      }
+      clearTimeout(timer);
+      btn.classList.remove(armedCls);
+      isArmed = false;
+      await onFire(btn);
+    });
+    // Callers need to re-arm after a failed fire (the agent already confirmed
+    // once, so a retry should go on one click) and to reset after a disarm.
+    btn._sbRest = rest;
+    btn._sbPreArm = () => { isArmed = true; };
+    return btn;
+  }
+
   /** Full-screen overlay. Closes on backdrop click. Returns overlay element. */
   function createOverlay(id) {
     document.getElementById(id)?.remove();
     const overlay = document.createElement('div');
     overlay.id = id;
+    overlay.className = 'sb-ui';
     overlay.style.cssText = `
       all:initial;position:fixed;inset:0;background:rgba(0,0,0,0.6);
       z-index:10000000;display:flex;align-items:center;justify-content:center;
@@ -820,11 +1131,11 @@
       const span = document.createElement('span');
       span.textContent = title;
       hdr.appendChild(span);
-      const xBtn = document.createElement('button');
-      xBtn.textContent = 'Close \u2715';
-      xBtn.style.cssText = 'background:var(--sb-control-bg);border:1px solid var(--sb-hover);color:var(--sb-text-muted);font-size:var(--sb-fs-11);font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
-      xBtn.onmouseenter = () => xBtn.style.background = 'var(--sb-hover)';
-      xBtn.onmouseleave = () => xBtn.style.background = 'var(--sb-control-bg)';
+      const xBtn = el('button', {
+        cls: 'sb-btn sb-btn--sm sb-btn--pill',
+        text: 'Close \u2715',
+        style: 'color:var(--sb-text-muted);',
+      });
       xBtn.onclick = () => overlay.remove();
       hdr.appendChild(xBtn);
       box.appendChild(hdr);
@@ -835,19 +1146,36 @@
 
   /** Fixed-position floating panel. Returns panel element (already in DOM).
    *  Options: centered (override right-anchored placement), draggable (grab header to move),
-   *  noScale (bypass MODAL_SCALE — for the settings panel). */
-  function createPanel({ id, title, width = 380, right = 20, maxHeight = 680, centered = false, draggable = false, noScale = false, onClose }) {
+   *  noScale (bypass MODAL_SCALE — for the settings panel), collapsible (header caret
+   *  that hides the body; `collapsed` sets the initial state and `onCollapse(bool)`
+   *  fires on every toggle, so callers can persist it), position + onMove (restore a
+   *  remembered {left,top} and report every drop, so a panel can stay where it was put). */
+  function createPanel({ id, title, width = 380, right = 20, maxHeight = 680, centered = false, draggable = false, noScale = false, collapsible = false, collapsed = false, position = null, onCollapse, onMove, onClose }) {
     removePanel(id);
     const scale = noScale ? 1 : MODAL_SCALE;
     width     = Math.round(width     * scale);
     maxHeight = Math.round(maxHeight * scale);
     const panel = document.createElement('div');
     panel.id = id;
+    panel.className = 'sb-ui';
+
+    // A remembered position outranks both placement modes. Clamped on restore: the
+    // window may be smaller than it was when the panel was dropped, and a panel
+    // restored off-screen is indistinguishable from a broken one.
+    const saved = (position && Number.isFinite(position.left) && Number.isFinite(position.top))
+      ? {
+          left: Math.min(window.innerWidth  - 80, Math.max(-width + 80, position.left)),
+          top:  Math.min(window.innerHeight - 40, Math.max(0,           position.top)),
+        }
+      : null;
+
     const initLeft = centered ? Math.max(20, Math.floor((window.innerWidth  - width)         / 2)) : null;
     const initTop  = centered ? Math.max(40, Math.floor((window.innerHeight - maxHeight) / 3)) : 60;
-    const placement = centered
-      ? `left:${initLeft}px;top:${initTop}px;`
-      : `top:${initTop}px;right:${right}px;`;
+    const placement = saved
+      ? `left:${saved.left}px;top:${saved.top}px;`
+      : centered
+        ? `left:${initLeft}px;top:${initTop}px;`
+        : `top:${initTop}px;right:${right}px;`;
     panel.style.cssText = `
       all:initial;position:fixed;${placement}width:${width}px;max-height:${maxHeight}px;
       overflow-y:auto;background:var(--sb-bg-panel);color:var(--sb-text);font-family:Arial,sans-serif;
@@ -863,26 +1191,74 @@
       border-bottom:1px solid var(--sb-border-soft);
       ${draggable ? 'cursor:grab;user-select:none;' : ''}
     `;
+    hdr.dataset.sbPanelHeader = '1';
     hdr.innerHTML = `<span style="font-weight:700;font-size:var(--sb-fs-14);">${title}</span>`;
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = 'Close \u2715';
-    closeBtn.style.cssText = 'background:var(--sb-control-bg);border:1px solid var(--sb-hover);color:var(--sb-text-muted);font-size:var(--sb-fs-11);font-weight:600;cursor:pointer;padding:3px 10px;border-radius:20px;';
-    closeBtn.onmouseenter = () => closeBtn.style.background = 'var(--sb-hover)';
-    closeBtn.onmouseleave = () => closeBtn.style.background = 'var(--sb-control-bg)';
+
+    // Right-hand control cluster: [caret] [Close ✕]. Built even when there's only
+    // one button so the header layout doesn't shift between panel kinds.
+    const ctrls = document.createElement('div');
+    ctrls.style.cssText = 'display:flex;align-items:center;gap:6px;flex-shrink:0;';
+
+    let collapseBtn = null;
+    if (collapsible) {
+      collapseBtn = el('button', { cls: 'sb-btn sb-btn--sm sb-btn--pill', style: 'color:var(--sb-text-muted);line-height:1;' });
+      const paint = () => {
+        const isCollapsed = panel.dataset.sbCollapsed === '1';
+        collapseBtn.textContent = isCollapsed ? '▾' : '▴';
+        collapseBtn.title = isCollapsed ? 'Expand' : 'Collapse';
+      };
+      /** Single entry point for the state — the header click and the caret share it,
+       *  and callers can drive it via panel._sbSetCollapsed(). */
+      panel._sbSetCollapsed = (next, notify = true) => {
+        panel.dataset.sbCollapsed = next ? '1' : '0';
+        // max-height is inline on the panel; while collapsed it must not reserve the
+        // full body height or the title bar floats in a tall empty box.
+        panel.style.maxHeight = next ? 'none' : maxHeight + 'px';
+        paint();
+        if (notify) { try { onCollapse?.(!!next); } catch (_) {} }
+      };
+      collapseBtn.onclick = (e) => {
+        e.stopPropagation();   // don't also trip the header's own toggle
+        panel._sbSetCollapsed(panel.dataset.sbCollapsed !== '1');
+      };
+      ctrls.appendChild(collapseBtn);
+
+      // Clicking the title bar itself toggles too. On a draggable panel that would
+      // fire at the end of every drag, so a click that moved the panel is ignored.
+      let downAt = null;
+      hdr.addEventListener('mousedown', (e) => { downAt = { x: e.clientX, y: e.clientY }; });
+      hdr.addEventListener('click', (e) => {
+        if (ctrls.contains(e.target)) return;
+        if (downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 4) return;
+        panel._sbSetCollapsed(panel.dataset.sbCollapsed !== '1');
+      });
+    }
+
+    const closeBtn = el('button', {
+      cls: 'sb-btn sb-btn--sm sb-btn--pill',
+      text: 'Close \u2715',
+      style: 'color:var(--sb-text-muted);',
+    });
     closeBtn.onclick = () => { removePanel(id); onClose?.(); };
-    hdr.appendChild(closeBtn);
+    ctrls.appendChild(closeBtn);
+    hdr.appendChild(ctrls);
     panel.appendChild(hdr);
     document.body.appendChild(panel);
 
-    if (draggable) attachPanelDrag(panel, hdr, closeBtn);
+    // Applied after mount so the initial state goes through the same path as a click.
+    // Silent: restoring a remembered state isn't the agent changing it.
+    if (collapsible && collapsed) panel._sbSetCollapsed(true, false);
+
+    if (draggable) attachPanelDrag(panel, hdr, ctrls, onMove);
     return panel;
   }
 
-  /** Wire mousedown-on-header drag for a panel. Switches the panel to absolute left/top. */
-  function attachPanelDrag(panel, hdr, closeBtn) {
+  /** Wire mousedown-on-header drag for a panel. Switches the panel to absolute left/top.
+   *  `ctrls` is the header's button cluster — dragging never starts on it. */
+  function attachPanelDrag(panel, hdr, ctrls, onDrop) {
     let dragging = false, startX = 0, startY = 0, originX = 0, originY = 0;
     const onDown = (e) => {
-      if (e.target === closeBtn || closeBtn.contains(e.target)) return;
+      if (e.target === ctrls || ctrls.contains(e.target)) return;
       dragging = true;
       const rect = panel.getBoundingClientRect();
       // Switch to left/top so we can move freely (drop right anchor if any).
@@ -915,6 +1291,12 @@
       if (!dragging) return;
       dragging = false;
       hdr.style.cursor = 'grab';
+      // Report the drop, not every mousemove — persisting mid-drag would write to
+      // storage a few hundred times per drag.
+      if (onDrop) {
+        const r = panel.getBoundingClientRect();
+        try { onDrop({ left: Math.round(r.left), top: Math.round(r.top) }); } catch (_) {}
+      }
     };
     hdr.addEventListener('mousedown', onDown);
     document.addEventListener('mousemove', onMove);
@@ -963,24 +1345,8 @@
     return span;
   }
 
-  /** Status log widget for sequential operations. Call log.log(msg, color). */
-  function makeStatusLog() {
-    const el = document.createElement('div');
-    el.style.cssText = 'margin-top:10px;font-size:var(--sb-fs-11);line-height:1.8;';
-    el.log = (msg, color = 'var(--sb-text-muted)') => {
-      const row = document.createElement('div');
-      row.style.color = color;
-      row.textContent = msg;
-      el.appendChild(row);
-    };
-    return el;
-  }
-
   function makeCopyBtn(textOrFn, label = '📋') {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.title = 'Copy';
-    b.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--sb-accent-strong);font-size:var(--sb-fs-13);padding:0 4px;flex-shrink:0;';
+    const b = el('button', { cls: 'sb-copy', text: label, title: 'Copy' });
     b.onclick = () => {
       const text = typeof textOrFn === 'function' ? textOrFn() : textOrFn;
       navigator.clipboard.writeText(text);
@@ -992,16 +1358,12 @@
 
   /** Section label used in forms. */
   function makeLabel(text) {
-    const l = document.createElement('div');
-    l.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-text-dim);font-weight:600;letter-spacing:0.05em;margin-bottom:5px;margin-top:12px;';
-    l.textContent = text;
-    return l;
+    return el('div', { cls: 'sb-form-label', text });
   }
 
   /** Select dropdown for forms. */
   function makeSelect(options, selected) {
-    const s = document.createElement('select');
-    s.style.cssText = 'width:100%;background:var(--sb-bg-deep);color:var(--sb-text);border:1px solid var(--sb-border);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-13);box-sizing:border-box;cursor:pointer;';
+    const s = el('select', { cls: 'sb-select sb-select--form' });
     options.forEach(o => {
       const opt = document.createElement('option');
       opt.value = o.value;
@@ -1014,40 +1376,37 @@
 
   /** Status element for panel footers. */
   function makeStatusEl() {
-    const el = document.createElement('div');
-    el.style.cssText = 'font-size:var(--sb-fs-12);min-height:16px;margin-top:10px;color:var(--sb-text-muted);';
-    return el;
+    return el('div', { cls: 'sb-status' });
   }
 
   /** Styled tag (used in info bar and elsewhere). */
   function makeTag(label, color, bg, border) {
-    const t = document.createElement('span');
-    t.style.cssText = `display:inline-flex;align-items:center;padding:2px 7px;border-radius:4px;font-weight:600;font-size:var(--sb-fs-10);color:${color};background:${bg};border:1px solid ${border};white-space:nowrap;`;
-    t.textContent = label;
-    return t;
+    // Colours are per-call (one of the --sb-tag-* triples), so they stay inline;
+    // the class carries only the shape.
+    return el('span', {
+      cls: 'sb-tag', text: label,
+      style: `color:${color};background:${bg};border:1px solid ${border};`,
+    });
   }
 
   /** Standard action button pair (cancel + confirm) for dialogs. */
   function makeDialogButtons({ confirmLabel, confirmColor = 'var(--sb-danger-border)', onCancel, onConfirm }) {
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    const row = el('div', { cls: 'sb-row', style: 'justify-content:flex-end;' });
 
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.style.cssText = `
-      padding:7px 16px;border-radius:6px;border:1px solid var(--sb-hover);
-      background:transparent;color:var(--sb-text);font-size:var(--sb-fs-13);cursor:pointer;flex:1;
-    `;
+    const cancelBtn = el('button', {
+      cls: 'sb-btn sb-btn--lg sb-btn--grow',
+      text: 'Cancel',
+      style: 'background:transparent;color:var(--sb-text);padding:7px 16px;',
+    });
     cancelBtn.onclick = onCancel;
 
-    const confirmBtn = document.createElement('button');
-    confirmBtn.textContent = confirmLabel;
-    confirmBtn.style.cssText = `
-      padding:7px 16px;border-radius:6px;border:none;
-      background:${confirmColor};color:#fff;font-weight:700;font-size:var(--sb-fs-13);cursor:pointer;flex:1;
-    `;
-    confirmBtn.onmouseenter = () => confirmBtn.style.filter = 'brightness(0.85)';
-    confirmBtn.onmouseleave = () => confirmBtn.style.filter = '';
+    // confirmColor is a per-dialog parameter (danger / violet / success), so the
+    // fill stays inline; --hover-fill drives the class's :hover without JS.
+    const confirmBtn = el('button', {
+      cls: 'sb-btn sb-btn--lg sb-btn--grow sb-btn--tinted',
+      text: confirmLabel,
+      style: `background:${confirmColor};border-color:transparent;color:var(--sb-on-solid);font-weight:700;padding:7px 16px;`,
+    });
     confirmBtn.onclick = () => onConfirm(confirmBtn, cancelBtn);
 
     row.appendChild(cancelBtn);
@@ -1071,6 +1430,7 @@
 
     toolbarEl = document.createElement('div');
     toolbarEl.id = 'sb-toolbar';
+    toolbarEl.className = 'sb-ui';
     toolbarEl.style.cssText = `
       display:flex;align-items:center;gap:6px;
       padding:3px 10px;
@@ -1083,6 +1443,7 @@
     document.getElementById('sb-info-bar-slot')?.remove();
     const infoSlot = document.createElement('div');
     infoSlot.id = 'sb-info-bar-slot';
+    infoSlot.className = 'sb-ui';
     infoSlot.style.cssText = 'box-sizing:border-box;width:100%;';
 
     card.insertAdjacentElement('afterend', infoSlot);
@@ -1090,20 +1451,42 @@
     return toolbarEl;
   }
 
+  /** Toolbar button with a dropdown of item buttons. Items run their handler with the
+   *  item element (for in-place ⏳/✔ feedback), so the menu stays open until a click
+   *  lands outside it. Idempotent by id, like addToolbarButton. Returns the menu body
+   *  (the element items go into), or null if it already exists. */
+  function addToolbarMenu(id, label) {
+    const toolbar = ensureToolbar();
+    if (!toolbar || toolbar.querySelector('#' + id)) return null;
+    const wrap = el('div', { id, style: 'position:relative;display:inline-flex;' });
+    const btn = el('button', { cls: 'sb-btn sb-toolbar-btn', text: label + ' ▾' });
+    const menu = el('div', { style: 'display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:10000;min-width:200px;flex-direction:column;gap:4px;padding:6px;background:var(--sb-bg-panel);border:1px solid var(--sb-control-bg);border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,0.35);' });
+    const close = () => { menu.style.display = 'none'; document.removeEventListener('mousedown', outside, true); };
+    const outside = (e) => { if (!wrap.contains(e.target)) close(); };
+    btn.addEventListener('click', () => {
+      if (menu.style.display === 'none') { menu.style.display = 'flex'; document.addEventListener('mousedown', outside, true); }
+      else close();
+    });
+    wrap.appendChild(btn); wrap.appendChild(menu);
+    // Left group, where CCPA / OT used to sit — appending would land it past the
+    // spacer on the right, after ⚙.
+    const spacer = toolbar.querySelector('#sb-toolbar-spacer');
+    spacer ? spacer.before(wrap) : toolbar.appendChild(wrap);
+    return menu;
+  }
+
+  function addMenuItem(menu, id, label, onClick) {
+    const btn = el('button', { id, cls: 'sb-btn sb-toolbar-btn', text: label, style: 'width:100%;text-align:left;' });
+    btn.addEventListener('click', () => onClick(btn));
+    menu.appendChild(btn);
+    return btn;
+  }
+
   function addToolbarButton(id, label, onClick) {
     const toolbar = ensureToolbar();
     if (!toolbar || toolbar.querySelector('#' + id)) return null;
 
-    const btn = document.createElement('button');
-    btn.id = id;
-    btn.textContent = label;
-    btn.style.cssText = `
-      font-size:var(--sb-fs-13);font-weight:600;padding:5px 12px;border-radius:4px;
-      border:1px solid var(--sb-hover);background:var(--sb-control-bg);
-      color:var(--sb-text);cursor:pointer;white-space:nowrap;transition:background 0.15s;
-    `;
-    btn.addEventListener('mouseenter', () => btn.style.background = 'var(--sb-hover)');
-    btn.addEventListener('mouseleave', () => btn.style.background = 'var(--sb-control-bg)');
+    const btn = el('button', { id, cls: 'sb-btn sb-toolbar-btn', text: label });
     btn.addEventListener('click', () => onClick(btn));
     toolbar.appendChild(btn);
     return btn;
@@ -1167,6 +1550,7 @@
         data { id email firstName lastName origin
           userAddress { shipping { street1 street2 city region postcode country } }
           subscription { id status subscriptionEndDate }
+          subscriptionList { id status }
         }
       }
     }`;
@@ -1225,7 +1609,7 @@
           userAddress { shipping { id street1 street2 city region postcode country } }
           subscriptionList {
             id status subscribed nextBillingDate planName subscriptionDate subscriptionEndDate
-            cashbirdDetails { data { billingDay nextBillingDate isAwaitCancellation } }
+            cashbirdDetails { data { cashbirdId billingDay nextBillingDate isAwaitCancellation } }
             credits { id type status reason }
             coupons { id code type amount status applyToNextBillingDates }
             addOnSettings {
@@ -1244,7 +1628,7 @@
     query userComments($id: Long) {
       userById(id: $id) {
         data {
-          commentList { id created author { firstName lastName email } comment zendeskUrl }
+          commentList { id created author { firstName lastName email } comment kustomerUrl }
         }
       }
     }`;
@@ -1433,7 +1817,8 @@
   }
 
   // Run searchCRM across multiple terms grouped by tier, dedupe by user.id keeping
-  // the lowest (best) tier seen. Used by Find Other Accounts (search panel).
+  // the lowest (best) tier seen. Used by Find Other Accounts (search panel) and AI
+  // customer discovery (AI panel).
   async function searchCRMTiered({ tier1, tier2, tier3, excludeId } = {}) {
     const terms = [
       ...(tier1 || []).map(t => ({ term: t, tier: 1 })),
@@ -1441,15 +1826,21 @@
       ...(tier3 || []).map(t => ({ term: t, tier: 3 })),
     ];
     const seen = new Map();
+    const errors = [];
+    const trace = [];
     for (const { term, tier } of terms) {
       if (!term) continue;
       await new Promise(resolve => {
         searchCRM(term, (users, err) => {
-          if (!err && users?.length) {
-            users.forEach(u => {
-              if (excludeId && u.id === excludeId) return;
-              if (!seen.has(u.id)) seen.set(u.id, { user: u, tier });
-            });
+          if (err) {
+            // Errors used to be dropped here, so a dead token or a captcha produced
+            // an empty result set indistinguishable from "no such customer".
+            errors.push({ term, tier, error: err });
+            trace.push(`  tier${tier} "${term}" → ✖ ${err}`);
+          } else {
+            const hits = (users || []).filter(u => !(excludeId && u.id === excludeId));
+            hits.forEach(u => { if (!seen.has(u.id)) seen.set(u.id, { user: u, tier }); });
+            trace.push(`  tier${tier} "${term}" → ${hits.length} hit(s)`);
           }
           resolve();
         });
@@ -1457,6 +1848,9 @@
     }
     const byTier = { 1: [], 2: [], 3: [] };
     seen.forEach(({ user, tier }) => byTier[tier].push(user));
+    console.log(`[BirdsEye:search] ${terms.filter(t => t.term).length} term(s), ${seen.size} unique match(es)\n` + (trace.join('\n') || '  (no terms)'));
+    if (errors.length) console.warn('[BirdsEye:search] ✖ some searches errored — an empty result may be a failure, not a miss', errors);
+    byTier.errors = errors;
     return byTier;
   }
 
@@ -1514,6 +1908,32 @@
     });
   }
 
+  /** Fetch the full `userById.data` object via USER_DETAILS_QUERY. Returns the
+   *  raw object (with full subscriptionList, addOnSettings, fraud info, etc.) or
+   *  null on failure. Used to enrich the lean searchCRM result. */
+  function fetchUserDetails(userId, callback) {
+    if (!getAccessToken()) return callback(null, 'No token');
+    crmRequest({
+      method: 'POST', url: GRAPHQL_URL,
+      headers: { 'Content-Type': 'application/json' },
+      data: JSON.stringify({ operationName: 'userDetailsById', query: USER_DETAILS_QUERY, variables: { id: userId } }),
+      onload(res) {
+        if (res.status === 401) { handle401(); return callback(null, 'Token expired'); }
+        if (res.status === 403) { handle403(); return callback(null, 'CRM captcha required'); }
+        try {
+          const json = JSON.parse(res.responseText);
+          callback(json?.data?.userById?.data || null);
+        } catch(e) { callback(null, 'Parse error'); }
+      },
+      onerror() { callback(null, 'Network error'); },
+    });
+  }
+
+  // Subscription statuses that can still be cancelled. 'Cancelled' is terminal;
+  // everything else here is a live sub the agent can cancel (Unpaid / OnHold
+  // subscriptions previously slipped through because we only matched 'Active').
+  const CANCELLABLE_SUB_STATUSES = ['Active', 'Unpaid', 'OnHold'];
+
   function fetchActiveSubscription(userId, callback) {
     if (!getAccessToken()) { return callback(null, 'No token'); }
     crmRequest({
@@ -1526,7 +1946,10 @@
         try {
           const json = JSON.parse(res.responseText);
           const list = json?.data?.userById?.data?.subscriptionList || [];
-          const active = list.find(s => s.status === 'Active' || s.subscribed);
+          // Prefer a truly Active sub, then fall back to any cancellable one
+          // (Unpaid / OnHold) so those statuses can be cancelled too.
+          const active = list.find(s => s.status === 'Active' || s.subscribed)
+                      || list.find(s => CANCELLABLE_SUB_STATUSES.includes(s.status));
           callback(active?.id || null, active ? null : 'No active subscription');
         } catch(e) { callback(null, 'Parse error'); }
       },
@@ -1565,6 +1988,31 @@
       { input: { id: subscriptionId, decision: 'RECEIVE', comment: null } },
       (data, err) => callback(err ? null : data?.cancelSubscription, err)
     );
+  }
+
+  /** Resolve active subscription, cancel it, post the CRM-side comment, update cache.
+   *  Shared by showCancelPanel and the AI action layer. */
+  function executeCancelSubscription(user, onProgress) {
+    const progress = onProgress || (() => {});
+    return new Promise((resolve, reject) => {
+      progress('Fetching subscription…');
+      fetchActiveSubscription(user.id, (subscriptionId, fetchErr) => {
+        if (fetchErr || !subscriptionId) return reject(new Error(fetchErr || 'No active subscription found.'));
+        progress('Cancelling subscription…');
+        mutCancelSub(subscriptionId, (data, cancelErr) => {
+          if (cancelErr) return reject(new Error(cancelErr));
+          progress('Posting CRM comment…');
+          mutPostComment(user.id, 'Subscription Cancelled', () => {
+            if (cachedCustomerCtx?.user) {
+              if (!cachedCustomerCtx.user.subscription) cachedCustomerCtx.user.subscription = {};
+              cachedCustomerCtx.user.subscription.status = 'Cancelled';
+            }
+            refreshOpenPanels('sb-cancel-panel');
+            resolve();
+          });
+        });
+      });
+    });
   }
 
   function mutCancelOrder(orderId, reasonOrCallback, maybeCallback) {
@@ -1650,44 +2098,71 @@
     );
   }
 
+  // CRM's "unsubscribe from emails" (captured 2026-10-13). Keyed by email, not user id.
+  const EMAIL_UNSUBSCRIBE_MUTATION = `
+    mutation userEmailUnsubscribe($input: UserEmailUnsubscribeInput!) {
+      userEmailUnsubscribe(input: $input) { data { email } error { message errorCode } }
+    }`;
+  async function crmUnsubscribeEmail(email) {
+    const data = await crmQueryP('userEmailUnsubscribe', EMAIL_UNSUBSCRIBE_MUTATION, { input: { email } });
+    const r = data.userEmailUnsubscribe;
+    if (r?.error) throw new Error(r.error.message || r.error.errorCode || 'Unsubscribe failed');
+    if (!r?.data) throw new Error('Unsubscribe: no result');
+    return r.data.email;
+  }
+
   /** Posts a comment, merging with our own recent comment for this ticket URL. */
   function mutPostComment(userId, comment, callback) {
-    const zendeskUrl = window.location.href;
+    const kustomerUrl = window.location.href;
     const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+    const tag = '[BirdsEye:comment]';
+    console.log(`${tag} ▶ post requested`, { userId, comment, kustomerUrl, _myAuthorEmail });
 
     fetchComments(userId, (comments) => {
+      console.log(`${tag} fetchComments returned ${comments.length} comment(s)`, comments);
       // Find our own recent comment on this ticket
       const now = Date.now();
       const match = comments.find(c => {
-        if (c.zendeskUrl !== zendeskUrl) return false;
+        if (c.kustomerUrl !== kustomerUrl) return false;
         if (_myAuthorEmail && c.author?.email !== _myAuthorEmail) return false;
         if (!c.created) return false;
         const age = now - new Date(c.created).getTime();
         return age <= THREE_DAYS_MS;
       });
+      console.log(`${tag} merge match:`, match || '(none — will create fresh)');
 
       const finalComment = match ? match.comment + '\n' + comment : comment;
 
-      const doCreate = () => gqlMutate('createUserComment',
-        CREATE_COMMENT_MUTATION,
-        { input: { userId, comment: finalComment, zendeskUrl } },
-        (data, err) => {
-          // Discover our author email after first successful create
-          if (!err && !_myAuthorEmail) {
-            fetchComments(userId, (freshComments) => {
-              const ours = freshComments
-                .filter(c => c.zendeskUrl === zendeskUrl)
-                .sort((a, b) => new Date(b.created) - new Date(a.created))[0];
-              if (ours?.author?.email) _myAuthorEmail = ours.author.email;
-            });
+      const doCreate = () => {
+        console.log(`${tag} → createUserComment`, { input: { userId, comment: finalComment, kustomerUrl } });
+        gqlMutate('createUserComment',
+          CREATE_COMMENT_MUTATION,
+          { input: { userId, comment: finalComment, kustomerUrl } },
+          (data, err) => {
+            const payload = data?.createUserComment;
+            console.log(`${tag} ◀ createUserComment response`, { err, payload, appError: payload?.error });
+            if (err) console.error(`${tag} ✖ top-level error:`, err);
+            else if (payload?.error) console.error(`${tag} ✖ app-level error:`, payload.error);
+            else console.log(`${tag} ✔ server reports success:`, payload?.message);
+            // Discover our author email after first successful create
+            if (!err && !_myAuthorEmail) {
+              fetchComments(userId, (freshComments) => {
+                const ours = freshComments
+                  .filter(c => c.kustomerUrl === kustomerUrl)
+                  .sort((a, b) => new Date(b.created) - new Date(a.created))[0];
+                console.log(`${tag} post-create readback (filtered by kustomerUrl):`, ours || '(NONE — comment not visible under this URL!)', `total now=${freshComments.length}`);
+                if (ours?.author?.email) _myAuthorEmail = ours.author.email;
+              });
+            }
+            callback(err ? null : data?.createUserComment, err);
           }
-          callback(err ? null : data?.createUserComment, err);
-        }
-      );
+        );
+      };
 
       if (match) {
+        console.log(`${tag} deleting prior comment id=${match.id} before merge-recreate`);
         gqlMutate('deleteUserComment', DELETE_COMMENT_MUTATION, { id: match.id },
-          () => doCreate()   // proceed even if delete failed
+          (d, e) => { console.log(`${tag} delete response`, { err: e, payload: d?.deleteUserComment }); doCreate(); }   // proceed even if delete failed
         );
       } else {
         doCreate();
@@ -1799,9 +2274,80 @@
 
   const NON_REFUNDABLE_STATUSES = ["NEW", "SHIPPED", "DELIVERED", "PRINTED", "DONE", "PROCESSED"];
 
+  /**
+   * Refund gate for a charge, judged across ALL of its linked orders.
+   *
+   * A charge carries `orders` as a LIST, and an upcharge puts more than one in it:
+   * the original is superseded (status UPGRADED — a shell that carries no fulfilment
+   * state) and the real order sits alongside it. Reading only `orders[0]` can
+   * therefore land on the shell, and UPGRADED is not in NON_REFUNDABLE_STATUSES, so
+   * the refund is offered on goods that already PRINTED or shipped.
+   *
+   * Skip the shells, judge every real order, block if ANY is past the point of no
+   * return. Returns the blocking status so the button can name it.
+   */
+  function chargeRefundBlock(charge) {
+    for (const o of (charge?.orders || [])) {
+      const own = (o?.status || '').toUpperCase();
+      const wh  = (o?.warehouseOrder?.data?.status || '').toUpperCase();
+      // A shell's own status (UPGRADED) says nothing about fulfilment, but its
+      // warehouse record still can — so read that rather than dropping the order
+      // outright, which is how a printed upcharge order used to slip the gate.
+      const st = wh || (own === 'UPGRADED' ? '' : own);
+      if (st && NON_REFUNDABLE_STATUSES.includes(st)) return { blocked: true, status: st };
+    }
+    return { blocked: false, status: '' };
+  }
+
+  /** Live colour for an Asendia event, by its free-text description. */
+  function asendiaEventColor(desc) {
+    const d = desc || '';
+    if (/deliver/i.test(d) && !/out for|attempt|unable|failed|not delivered/i.test(d)) return 'var(--sb-success)';
+    if (/return|exception|unable|failed|lost/i.test(d)) return 'var(--sb-danger)';
+    return 'var(--sb-warning)';
+  }
+
+  /** "ASENDIA LIVE" block for an order card: placeholder now, last 3 scans when the
+   *  lookup lands. Oldest → newest like the CRM lines; the newest is bold + coloured. */
+  function renderAsendiaLive(trackNo) {
+    const box = document.createElement('div');
+    box.style.cssText = 'margin-top:6px;padding-top:4px;border-top:1px dashed var(--sb-control-bg);';
+    const head = document.createElement('div');
+    head.style.cssText = 'color:var(--sb-text-dim);font-size:var(--sb-fs-9);font-weight:700;letter-spacing:0.05em;';
+    head.textContent = 'ASENDIA LIVE ⏳';
+    box.appendChild(head);
+
+    asendiaTracking(trackNo).then((live) => {
+      if (!live.found) { head.textContent = 'ASENDIA LIVE · no record'; return; }
+      const events = live.events.slice(-3);
+      head.textContent = 'ASENDIA LIVE' + (events.length ? '' : ' · no scans yet');
+      head.title = [live.service, live.lastMileMessage, live.finalMile?.carrier && `Final mile: ${live.finalMile.carrier} ${live.finalMile.trackingNumber || ''}`]
+        .filter(Boolean).join('\n');
+      events.forEach((e, i) => {
+        const isLast = i === events.length - 1;
+        const d = document.createElement('div');
+        d.style.cssText = `color:${isLast ? asendiaEventColor(e.description) : 'var(--sb-text-dim)'};font-size:var(--sb-fs-11);margin-top:2px;${isLast ? 'font-weight:600;' : ''}`;
+        const date = new Date(e.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        d.textContent = `${date} · ${e.description}${e.location ? ' — ' + e.location : ''}`;
+        box.appendChild(d);
+      });
+      if (live.finalMile?.link) {
+        const a = document.createElement('a');
+        a.href = live.finalMile.link; a.target = '_blank'; a.rel = 'noopener';
+        a.textContent = `${live.finalMile.carrier || 'Final mile'} ${live.finalMile.trackingNumber || 'tracking'} ↗`;
+        a.style.cssText = 'display:inline-block;margin-top:3px;color:var(--sb-accent-strong);font-size:var(--sb-fs-10);text-decoration:none;';
+        box.appendChild(a);
+      }
+    }).catch((e) => {
+      head.textContent = 'ASENDIA LIVE · ' + (e?.message || 'lookup failed');
+      head.style.color = 'var(--sb-danger)';
+    });
+    return box;
+  }
+
   function renderOrderBlock(order, compact = false, ctx = null, isReplacement = false) {
     const wrap = document.createElement('div');
-    const borderColor = isReplacement ? '#7c3aed' : '#4f46e5';
+    const borderColor = isReplacement ? 'var(--sb-solid-violet)' : 'var(--sb-solid-primary)';
     wrap.style.cssText = `
       margin-top:${compact ? 4 : 0}px;padding:${compact ? '6px 8px' : '10px 12px'};
       background:${isReplacement ? 'var(--sb-bg-row-replacement)' : 'var(--sb-bg-row)'};border-radius:6px;border-left:2px solid ${borderColor};
@@ -1908,6 +2454,12 @@
       wrap.appendChild(statusEl);
     }
 
+    // Live Asendia scans (last 3) under the CRM events — CRM's copy of Asendia
+    // tracking lags. Full panel only; the lookup is cached for 10 min per number.
+    if (!compact && trackNo && /^asendia/.test(_orderCourier(order) || '')) {
+      wrap.appendChild(renderAsendiaLive(trackNo));
+    }
+
     // Replace + Cancel buttons — only in full panel
     if (!compact && ctx) {
       const btnRow = document.createElement('div');
@@ -1918,7 +2470,7 @@
       replBtn.textContent = '\uD83D\uDD04 Replace';
       replBtn.disabled = isReplacementOrder;
       replBtn.title = isReplacementOrder ? 'Cannot replace a replacement order' : '';
-      replBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${isReplacementOrder ? 'rgba(99,102,241,0.3)' : '#6366f1'};background:transparent;color:${isReplacementOrder ? 'rgba(165,180,252,0.4)' : 'var(--sb-accent)'};font-weight:600;font-size:var(--sb-fs-11);cursor:${isReplacementOrder ? 'not-allowed' : 'pointer'};`;
+      replBtn.style.cssText = `padding:5px 10px;border-radius:5px;border:1px solid ${isReplacementOrder ? 'rgba(99,102,241,0.3)' : 'var(--sb-solid-primary-lo)'};background:transparent;color:${isReplacementOrder ? 'rgba(165,180,252,0.4)' : 'var(--sb-accent)'};font-weight:600;font-size:var(--sb-fs-11);cursor:${isReplacementOrder ? 'not-allowed' : 'pointer'};`;
       if (!isReplacementOrder) {
         replBtn.onmouseenter = () => replBtn.style.background = 'rgba(99,102,241,0.15)';
         replBtn.onmouseleave = () => replBtn.style.background = 'transparent';
@@ -2102,8 +2654,8 @@
     const searchBtn = document.createElement('button');
     searchBtn.textContent = 'Search';
     searchBtn.style.cssText = `
-      padding:7px 14px;border-radius:6px;border:none;background:#4f46e5;
-      color:#fff;font-weight:700;font-size:var(--sb-fs-13);cursor:pointer;
+      padding:7px 14px;border-radius:6px;border:none;background:var(--sb-solid-primary);
+      color:var(--sb-on-solid);font-weight:700;font-size:var(--sb-fs-13);cursor:pointer;
     `;
 
     const filterBtn = document.createElement('button');
@@ -2170,7 +2722,7 @@
           <div style="color:var(--sb-text-dim);font-size:var(--sb-fs-11);margin-top:2px;">ID: ${user.id}</div>
           ${addr ? `<div style="color:var(--sb-text-dim);font-size:var(--sb-fs-11);margin-top:2px;">${addr}</div>` : ''}
           <div style="margin-top:8px;display:flex;gap:6px;">
-            <button class="sb-apply" style="padding:4px 12px;border-radius:5px;border:none;background:#4f46e5;color:#fff;font-size:var(--sb-fs-12);font-weight:600;cursor:pointer;">Apply to Kustomer</button>
+            <button class="sb-apply" style="padding:4px 12px;border-radius:5px;border:none;background:var(--sb-solid-primary);color:var(--sb-on-solid);font-size:var(--sb-fs-12);font-weight:600;cursor:pointer;">Apply to Kustomer</button>
             <a class="sb-profile" href="https://crm.scentbird.com/user/${user.id}/profile/subscription" target="_blank" style="padding:4px 12px;border-radius:5px;border:1px solid var(--sb-hover);background:transparent;color:var(--sb-text);font-size:var(--sb-fs-12);cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;">Open Profile</a>
           </div>
         `;
@@ -2189,7 +2741,7 @@
             try {
               await applyUser(user);
               cachedCustomerCtx = { email: user.email.trim().toLowerCase(), user, _kustomerId: getCustomerIdFromURL() };
-              btn.textContent = '✔ Done'; btn.style.background = '#059669';
+              btn.textContent = '✔ Done'; btn.style.background = 'var(--sb-solid-success)';
               autoClose(() => removePanel('sb-search-panel'));
               const fillBtn = document.getElementById('sb-fill-name-btn');
               if (fillBtn && !fillBtn.disabled) fillBtn.click();
@@ -2401,7 +2953,7 @@
             const nest = document.createElement('div');
             nest.style.cssText = 'margin-left:12px;margin-top:6px;padding-left:8px;border-left:1px solid rgba(124,58,237,0.3);';
             const replLabel = document.createElement('div');
-            replLabel.style.cssText = 'font-size:var(--sb-fs-10);color:#7c3aed;font-weight:600;letter-spacing:0.05em;margin-bottom:4px;';
+            replLabel.style.cssText = 'font-size:var(--sb-fs-10);color:var(--sb-solid-violet);font-weight:600;letter-spacing:0.05em;margin-bottom:4px;';
             replLabel.textContent = 'REPLACEMENT';
             nest.appendChild(replLabel);
             nest.appendChild(pickWrap(renderOrderBlock(r, false, orderCtx, true), r));
@@ -2416,7 +2968,7 @@
 
         const csBtn = document.createElement('button');
         csBtn.textContent = '📦 Custom Shipment';
-        csBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #4f46e5;background:transparent;
+        csBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid var(--sb-solid-primary);background:transparent;
           color:var(--sb-accent);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
         csBtn.onmouseenter = () => csBtn.style.background = 'rgba(79,70,229,0.1)';
         csBtn.onmouseleave = () => csBtn.style.background = 'transparent';
@@ -2459,7 +3011,7 @@
           panel.appendChild(failHdr);
 
           const failWrap = document.createElement('div');
-          failWrap.style.cssText = 'background:#2a1a1a;border-radius:6px;padding:6px 10px;margin-bottom:12px;';
+          failWrap.style.cssText = 'background:var(--sb-note-danger-bg);border-radius:6px;padding:6px 10px;margin-bottom:12px;';
           failed.forEach(entry => {
             const c = entry.charge;
             const desc = c?.cashbirdDetails?.invoice?.lineItems?.[0]?.description || c?.category || '\u2014';
@@ -2799,6 +3351,49 @@
     { value: 'PROMO_OFFER',      label: 'Promo Offer' },
   ];
 
+  /** Shipment month/year selects. A year either side of now is the whole useful
+   *  range — a custom shipment is always near the present. */
+  function _csMonthPicker(form) {
+    // Month/Year picker
+    form.appendChild(makeLabel('SHIPMENT MONTH'));
+    const monthYearRow = document.createElement('div');
+    monthYearRow.style.cssText = 'display:flex;gap:6px;margin-bottom:8px;';
+
+    const now = new Date();
+    const monthOpts = ['January','February','March','April','May','June','July','August','September','October','November','December']
+      .map((m, i) => ({ value: String(i + 1), label: m }));
+    const monthSel = makeSelect(monthOpts, String(now.getMonth() + 1));
+    monthSel.style.flex = '1';
+
+    const yearOpts = [now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1]
+      .map(y => ({ value: String(y), label: String(y) }));
+    const yearSel = makeSelect(yearOpts, String(now.getFullYear()));
+    yearSel.style.width = '90px';
+
+    monthYearRow.appendChild(monthSel);
+    monthYearRow.appendChild(yearSel);
+    form.appendChild(monthYearRow);
+
+    return { monthSel, yearSel };
+  }
+
+  /** The products list. Starts empty by design — a custom shipment has no source
+   *  order to seed from, so everything arrives through Search Product. */
+  function _csProductRows(form) {
+    // Products
+    form.appendChild(makeLabel('PRODUCTS'));
+    const itemsWrap = document.createElement('div');
+    itemsWrap.style.cssText = 'background:var(--sb-bg-deep);border-radius:6px;padding:8px 10px;min-height:30px;';
+    const itemChecks = [];
+
+    const noItems = document.createElement('div');
+    noItems.style.cssText = 'color:var(--sb-text-dim);font-size:var(--sb-fs-11);font-style:italic;';
+    noItems.textContent = 'No products added. Use Search Product below.';
+    itemsWrap.appendChild(noItems);
+    form.appendChild(itemsWrap);
+    return { itemsWrap, itemChecks, noItems };
+  }
+
   function showCustomShipmentForm(user) {
     const existingForm = document.getElementById('sb-cs-form');
     if (existingForm) { existingForm.remove(); document.getElementById('sb-product-search-panel')?.remove(); return; }
@@ -2826,36 +3421,10 @@
     form.appendChild(bomSel);
 
     // Month/Year picker
-    form.appendChild(makeLabel('SHIPMENT MONTH'));
-    const monthYearRow = document.createElement('div');
-    monthYearRow.style.cssText = 'display:flex;gap:6px;margin-bottom:8px;';
-
-    const now = new Date();
-    const monthOpts = ['January','February','March','April','May','June','July','August','September','October','November','December']
-      .map((m, i) => ({ value: String(i + 1), label: m }));
-    const monthSel = makeSelect(monthOpts, String(now.getMonth() + 1));
-    monthSel.style.flex = '1';
-
-    const yearOpts = [now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1]
-      .map(y => ({ value: String(y), label: String(y) }));
-    const yearSel = makeSelect(yearOpts, String(now.getFullYear()));
-    yearSel.style.width = '90px';
-
-    monthYearRow.appendChild(monthSel);
-    monthYearRow.appendChild(yearSel);
-    form.appendChild(monthYearRow);
+    const { monthSel, yearSel } = _csMonthPicker(form);
 
     // Products
-    form.appendChild(makeLabel('PRODUCTS'));
-    const itemsWrap = document.createElement('div');
-    itemsWrap.style.cssText = 'background:var(--sb-bg-deep);border-radius:6px;padding:8px 10px;min-height:30px;';
-    const itemChecks = [];
-
-    const noItems = document.createElement('div');
-    noItems.style.cssText = 'color:var(--sb-text-dim);font-size:var(--sb-fs-11);font-style:italic;';
-    noItems.textContent = 'No products added. Use Search Product below.';
-    itemsWrap.appendChild(noItems);
-    form.appendChild(itemsWrap);
+    const { itemsWrap, itemChecks, noItems } = _csProductRows(form);
 
     // Product search button
     const searchRow = document.createElement('div');
@@ -2925,11 +3494,11 @@
     confirmBtn.textContent = 'Create Custom Shipment';
     confirmBtn.style.cssText = `
       margin-top:14px;width:100%;padding:9px;border-radius:6px;
-      border:none;background:#4f46e5;color:#fff;font-weight:700;
+      border:none;background:var(--sb-solid-primary);color:var(--sb-on-solid);font-weight:700;
       font-size:var(--sb-fs-13);cursor:pointer;box-sizing:border-box;
     `;
-    confirmBtn.onmouseenter = () => confirmBtn.style.background = '#4338ca';
-    confirmBtn.onmouseleave = () => confirmBtn.style.background = '#4f46e5';
+    confirmBtn.onmouseenter = () => confirmBtn.style.background = 'var(--sb-solid-primary-hi)';
+    confirmBtn.onmouseleave = () => confirmBtn.style.background = 'var(--sb-solid-primary)';
 
     // Upcharge manager
     const csUpchargeUI = createUpchargeManager(user.id, itemChecks, confirmBtn);
@@ -2996,7 +3565,7 @@
 
       confBox.appendChild(makeDialogButtons({
         confirmLabel: 'Confirm',
-        confirmColor: '#4f46e5',
+        confirmColor: 'var(--sb-solid-primary)',
         onCancel: () => confOverlay.remove(),
         onConfirm: (cBtn, cancelBtn) => {
           cBtn.disabled = true;
@@ -3008,7 +3577,7 @@
 
             const variables = {
               input: {
-                zendesk: window.location.href,
+                kustomer: window.location.href,
                 reason: reasonSel.value,
                 bom: bomSel.value,
                 customerId: user.id,
@@ -3051,7 +3620,7 @@
                 const postComment = () => {
                   confStatus.textContent = 'Posting comment...';
                   gqlMutate('createUserComment', CREATE_COMMENT_MUTATION,
-                    { input: { userId: user.id, comment: commentText, zendeskUrl: window.location.href } },
+                    { input: { userId: user.id, comment: commentText, kustomerUrl: window.location.href } },
                     () => {
                       confStatus.style.color = 'var(--sb-success-soft)';
                       confStatus.textContent = '\u2714 Custom shipment created!';
@@ -3125,6 +3694,445 @@
 
   // ── Edit Customer Panel ──────────────────────────────────────────────────
 
+  /** Email row + Update. Posts the change, then re-resolves the customer. */
+  function _editEmailSection(panel, user) {
+  // Email section
+  panel.appendChild(makeLabel('EMAIL'));
+  const emailRow = document.createElement('div');
+  emailRow.style.cssText = 'display:flex;gap:6px;margin-bottom:12px;';
+
+  const emailInput = document.createElement('input');
+  emailInput.type = 'email';
+  emailInput.value = user.email || '';
+  emailInput.style.cssText = `
+    flex:1;padding:7px 10px;border-radius:6px;border:1px solid var(--sb-hover);
+    background:var(--sb-bg-deep);color:var(--sb-text);font-size:var(--sb-fs-12);outline:none;box-sizing:border-box;
+  `;
+
+  const updateBtn = document.createElement('button');
+  updateBtn.textContent = 'Update';
+  updateBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:var(--sb-solid-primary);color:var(--sb-on-solid);font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;';
+  updateBtn.onmouseenter = () => updateBtn.style.background = 'var(--sb-solid-primary-hi)';
+  updateBtn.onmouseleave = () => updateBtn.style.background = 'var(--sb-solid-primary)';
+
+  const emailStatus = makeStatusEl();
+
+  updateBtn.onclick = () => {
+    const newEmail = emailInput.value.trim();
+    if (!newEmail || !newEmail.includes('@')) {
+      emailStatus.style.color = 'var(--sb-danger)';
+      emailStatus.textContent = 'Enter a valid email.';
+      return;
+    }
+    if (newEmail === user.email) {
+      emailStatus.style.color = 'var(--sb-warning-strong)';
+      emailStatus.textContent = 'Email is unchanged.';
+      return;
+    }
+    updateBtn.disabled = true;
+    updateBtn.textContent = '⏳';
+    emailStatus.textContent = '';
+
+    gqlMutate('userChangeEmail', CHANGE_EMAIL_MUTATION,
+      { input: { userId: user.id, email: newEmail } },
+      (data, err) => {
+        const respErr = data?.userChangeEmail?.error;
+        const errMsg = err || respErr?.message;
+        if (errMsg) {
+          emailStatus.style.color = 'var(--sb-danger)';
+          emailStatus.textContent = '\u2718 ' + errMsg;
+          updateBtn.disabled = false;
+          updateBtn.textContent = 'Update';
+          return;
+        }
+        emailStatus.style.color = 'var(--sb-success-soft)';
+        emailStatus.textContent = '\u2714 Email updated.';
+        updateBtn.textContent = '✔';
+        user.email = newEmail;
+        mutPostComment(user.id, 'Email updated to ' + newEmail, () => {});
+        setTimeout(() => {
+          updateBtn.textContent = 'Update';
+          updateBtn.disabled = false;
+        }, 2000);
+      }
+    );
+  };
+
+  emailRow.appendChild(emailInput);
+  emailRow.appendChild(updateBtn);
+  panel.appendChild(emailRow);
+  panel.appendChild(emailStatus);
+
+  }
+
+  /** Gender select — drives which catalogue the customer is shown. */
+  function _editGenderSection(panel, user) {
+  // ── Gender section ──────────────────────────────────────────────────
+  panel.appendChild(makeLabel('GENDER'));
+  const genderRow = document.createElement('div');
+  genderRow.style.cssText = 'display:flex;gap:6px;margin-bottom:12px;';
+
+  const currentGender = cachedCustomerCtx?._gender || '';
+  const genderSel = makeSelect([
+    { value: 'MALE', label: '♂ Male (Colognes)' },
+    { value: 'FEMALE', label: '♀ Female (Perfumes)' },
+  ], currentGender || 'MALE');
+  genderSel.style.flex = '1';
+
+  const genderBtn = document.createElement('button');
+  genderBtn.textContent = 'Update';
+  genderBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:var(--sb-solid-primary);color:var(--sb-on-solid);font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;';
+  genderBtn.onmouseenter = () => genderBtn.style.background = 'var(--sb-solid-primary-hi)';
+  genderBtn.onmouseleave = () => genderBtn.style.background = 'var(--sb-solid-primary)';
+
+  const genderStatus = makeStatusEl();
+
+  genderBtn.onclick = () => {
+    const newGender = genderSel.value;
+    if (newGender === currentGender) {
+      genderStatus.style.color = 'var(--sb-warning-strong)';
+      genderStatus.textContent = 'Gender is unchanged.';
+      return;
+    }
+    genderBtn.disabled = true;
+    genderBtn.textContent = '⏳';
+    genderStatus.textContent = 'Authenticating...';
+
+    ensureCustomerAuth((ok) => {
+      if (!ok) {
+        genderStatus.style.color = 'var(--sb-danger)';
+        genderStatus.textContent = '\u2718 Auth failed';
+        genderBtn.disabled = false;
+        genderBtn.textContent = 'Update';
+        return;
+      }
+      genderStatus.textContent = 'Updating gender...';
+      customerApiCall('UserPersonalInfoUpdate',
+        `mutation UserPersonalInfoUpdate($input: UserPersonalInfoUpdateInput!) {
+          userPersonalInfoUpdate(input: $input) {
+            data { id gender }
+            error {
+              ... on SecurityError { message }
+              ... on ServerError { message }
+              ... on ValidationError { message }
+            }
+          }
+        }`,
+        { input: { gender: newGender } },
+        (data, err) => {
+          const respErr = data?.userPersonalInfoUpdate?.error;
+          const errMsg = err || respErr?.message;
+          if (errMsg) {
+            genderStatus.style.color = 'var(--sb-danger)';
+            genderStatus.textContent = '\u2718 ' + errMsg;
+            genderBtn.disabled = false;
+            genderBtn.textContent = 'Update';
+            return;
+          }
+          genderStatus.style.color = 'var(--sb-success-soft)';
+          genderStatus.textContent = '\u2714 Gender updated.';
+          genderBtn.textContent = '✔';
+          if (cachedCustomerCtx) cachedCustomerCtx._gender = newGender;
+          mutPostComment(user.id, 'Gender updated to ' + (newGender === 'MALE' ? 'Male' : 'Female'), () => {});
+          setTimeout(() => { genderBtn.textContent = 'Update'; genderBtn.disabled = false; }, 2000);
+        }
+      );
+    });
+  };
+
+  genderRow.appendChild(genderSel);
+  genderRow.appendChild(genderBtn);
+  panel.appendChild(genderRow);
+  panel.appendChild(genderStatus);
+
+  }
+
+  /** Shipping address: the current value, then an autocomplete-backed editor
+   *  that stays hidden until the customer API has authenticated. */
+  function _editAddressSection(panel, user) {
+  // ── Address section ─────────────────────────────────────────────────
+  panel.appendChild(makeLabel('SHIPPING ADDRESS'));
+
+  // Current address display
+  const shipping = user.userAddress?.shipping;
+  if (shipping) {
+    const addrDisplay = document.createElement('div');
+    addrDisplay.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-text-muted);margin-bottom:8px;line-height:1.5;';
+    addrDisplay.textContent = [shipping.street1, shipping.street2, shipping.city, shipping.region, shipping.postcode].filter(Boolean).join(', ');
+    panel.appendChild(addrDisplay);
+  }
+
+  // Container for address edit UI (hidden until auth)
+  const addrEditWrap = document.createElement('div');
+  addrEditWrap.style.cssText = 'display:none;';
+  panel.appendChild(addrEditWrap);
+
+  const addrAuthStatus = makeStatusEl();
+  panel.appendChild(addrAuthStatus);
+
+  // Update Address button — triggers auth, then reveals search
+  const updateAddrBtn = document.createElement('button');
+  updateAddrBtn.textContent = '📍 Update Address';
+  updateAddrBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid var(--sb-solid-primary);background:transparent;
+    color:var(--sb-accent);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
+  updateAddrBtn.onmouseenter = () => updateAddrBtn.style.background = 'rgba(79,70,229,0.1)';
+  updateAddrBtn.onmouseleave = () => updateAddrBtn.style.background = 'transparent';
+  updateAddrBtn.onclick = () => {
+    updateAddrBtn.disabled = true;
+    updateAddrBtn.textContent = '⏳ Authenticating...';
+    addrAuthStatus.textContent = '';
+
+    ensureCustomerAuth((ok) => {
+      if (!ok) {
+        addrAuthStatus.style.color = 'var(--sb-danger)';
+        addrAuthStatus.textContent = '\u2718 Authentication failed';
+        updateAddrBtn.disabled = false;
+        updateAddrBtn.textContent = '📍 Update Address';
+        return;
+      }
+      // Hide button, show search UI
+      updateAddrBtn.style.display = 'none';
+      addrAuthStatus.textContent = '';
+      addrEditWrap.style.display = '';
+    });
+  };
+  panel.appendChild(updateAddrBtn);
+
+  // Build address edit UI inside the hidden container
+  const addrInput = document.createElement('input');
+  addrInput.type = 'text';
+  addrInput.placeholder = 'Start typing new address...';
+  addrInput.style.cssText = `
+    width:100%;padding:7px 10px;border-radius:6px;border:1px solid var(--sb-hover);
+    background:var(--sb-bg-deep);color:var(--sb-text);font-size:var(--sb-fs-12);outline:none;box-sizing:border-box;
+  `;
+  addrEditWrap.appendChild(addrInput);
+
+  const addrResults = document.createElement('div');
+  addrResults.style.cssText = 'max-height:200px;overflow-y:auto;';
+  addrEditWrap.appendChild(addrResults);
+
+  const selectedAddr = document.createElement('div');
+  selectedAddr.style.cssText = 'display:none;background:var(--sb-bg-deep);border-radius:6px;padding:8px 10px;margin-top:8px;font-size:var(--sb-fs-11);color:var(--sb-text-secondary);line-height:1.6;';
+  addrEditWrap.appendChild(selectedAddr);
+
+  const addrStatus = makeStatusEl();
+  addrEditWrap.appendChild(addrStatus);
+
+  const addrSaveBtn = document.createElement('button');
+  addrSaveBtn.textContent = 'Save Address';
+  addrSaveBtn.style.cssText = 'display:none;width:100%;padding:9px;border-radius:6px;border:none;background:var(--sb-solid-primary);color:var(--sb-on-solid);font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;margin-top:8px;';
+  addrSaveBtn.onmouseenter = () => addrSaveBtn.style.background = 'var(--sb-solid-primary-hi)';
+  addrSaveBtn.onmouseleave = () => addrSaveBtn.style.background = 'var(--sb-solid-primary)';
+  addrEditWrap.appendChild(addrSaveBtn);
+
+  let _selectedAddrData = null;
+  const userCountry = shipping?.country || 'US';
+
+  // Debounced autocomplete
+  let _addrTimer = null;
+  addrInput.addEventListener('input', () => {
+    clearTimeout(_addrTimer);
+    const q = addrInput.value.trim();
+    if (q.length < 3) { addrResults.innerHTML = ''; return; }
+
+    _addrTimer = setTimeout(() => {
+      customerApiCall('AddressAutocomplete',
+        `query AddressAutocomplete($input: AddressAutocompleteInput!) {
+          addressAutocomplete(input: $input) {
+            data { type placeId mainText secondaryText }
+          }
+        }`,
+        { input: { query: q, country: userCountry, apiVersion: 'V2' } },
+        (data, err) => {
+          addrResults.innerHTML = '';
+          if (err || !data?.addressAutocomplete?.data?.length) return;
+
+          data.addressAutocomplete.data.forEach(suggestion => {
+            const row = document.createElement('div');
+            row.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:var(--sb-fs-11);color:var(--sb-text-secondary);border-bottom:1px solid var(--sb-border-soft);';
+            row.onmouseenter = () => row.style.background = 'rgba(99,102,241,0.15)';
+            row.onmouseleave = () => row.style.background = '';
+
+            const main = document.createElement('div');
+            main.textContent = suggestion.mainText;
+            main.style.fontWeight = '600';
+            row.appendChild(main);
+
+            if (suggestion.secondaryText) {
+              const sec = document.createElement('div');
+              sec.style.cssText = 'color:var(--sb-text-dim);font-size:var(--sb-fs-10);';
+              sec.textContent = suggestion.secondaryText;
+              row.appendChild(sec);
+            }
+
+            row.onclick = () => {
+              if (suggestion.type === 'CONTAINER') {
+                addrInput.value = suggestion.mainText;
+                addrInput.dispatchEvent(new Event('input', { bubbles: true }));
+                return;
+              }
+
+              addrResults.innerHTML = '<div style="color:var(--sb-text-muted);font-size:var(--sb-fs-11);padding:6px 10px;">Loading details...</div>';
+              customerApiCall('AddressDetails',
+                `query AddressDetails($input: AddressAutocompleteDetailsInput!) {
+                  addressAutocompleteDetails(input: $input) {
+                    data { city region postalCode street1 street2 }
+                  }
+                }`,
+                { input: { placeId: suggestion.placeId, apiVersion: 'V2' } },
+                (detData, detErr) => {
+                  addrResults.innerHTML = '';
+                  if (detErr || !detData?.addressAutocompleteDetails?.data) {
+                    addrStatus.style.color = 'var(--sb-danger)';
+                    addrStatus.textContent = '\u2718 Failed to load address details';
+                    return;
+                  }
+                  const addr = detData.addressAutocompleteDetails.data;
+                  _selectedAddrData = addr;
+                  addrInput.value = '';
+                  selectedAddr.style.display = '';
+                  selectedAddr.innerHTML = `
+                    <div style="font-weight:600;color:var(--sb-text);">${addr.street1 || ''}${addr.street2 ? ', ' + addr.street2 : ''}</div>
+                    <div>${addr.city || ''}, ${addr.region || ''} ${addr.postalCode || ''}</div>
+                  `;
+                  addrSaveBtn.style.display = '';
+                }
+              );
+            };
+
+            addrResults.appendChild(row);
+          });
+        }
+      );
+    }, 300);
+  });
+
+  // Save address
+  addrSaveBtn.onclick = () => {
+    if (!_selectedAddrData) return;
+    addrSaveBtn.disabled = true;
+    addrSaveBtn.textContent = 'Validating...';
+    addrStatus.textContent = '';
+
+    const firstName = (user.firstName || '').toUpperCase();
+    const lastName = (user.lastName || '').toUpperCase();
+
+    // Step 1: Validate
+    customerApiCall('AddressValidate',
+      `mutation AddressValidate($inputNew: AddressValidateInput!) {
+        addressValidate(inputNew: $inputNew) {
+          data {
+            address { id primary firstName lastName country city region postalCode street1 street2 phone }
+            isPrimaryAddress
+          }
+          error {
+            ... on ValidationError { message }
+            ... on AddressValidationError { message }
+            ... on SecurityError { message }
+            ... on ServerError { message }
+            ... on AmbiguousAddressError { message suggestions { id street1 street2 city region postalCode country } }
+          }
+        }
+      }`,
+      { inputNew: {
+        address: {
+          firstName, lastName, country: userCountry,
+          postalCode: _selectedAddrData.postalCode || '',
+          region: _selectedAddrData.region || '',
+          city: _selectedAddrData.city || '',
+          street1: _selectedAddrData.street1 || '',
+          street2: _selectedAddrData.street2 || '',
+          phone: '', receiveAlertsByPhone: false, receiveOffersByPhone: false,
+        },
+        apiVersion: 'V2',
+        strict: false,
+      }},
+      (valData, valErr) => {
+        const valResult = valData?.addressValidate;
+        const valErrMsg = valErr || valResult?.error?.message;
+        if (valErrMsg) {
+          addrStatus.style.color = 'var(--sb-danger)';
+          addrStatus.textContent = '\u2718 ' + valErrMsg;
+          addrSaveBtn.disabled = false;
+          addrSaveBtn.textContent = 'Save Address';
+          return;
+        }
+
+        const validatedAddr = valResult?.data?.address;
+        if (!validatedAddr) {
+          addrStatus.style.color = 'var(--sb-danger)';
+          addrStatus.textContent = '\u2718 Validation returned no address data';
+          addrSaveBtn.disabled = false;
+          addrSaveBtn.textContent = 'Save Address';
+          return;
+        }
+
+        const addrId = validatedAddr.id || cachedCustomerCtx?._shippingAddrId;
+        if (!addrId) {
+          addrStatus.style.color = 'var(--sb-danger)';
+          addrStatus.textContent = '\u2718 No address ID available — try refreshing';
+          addrSaveBtn.disabled = false;
+          addrSaveBtn.textContent = 'Save Address';
+          return;
+        }
+
+        // Step 2: Update
+        addrSaveBtn.textContent = 'Saving...';
+        customerApiCall('AddressUpdate',
+          `mutation AddressUpdate($input: AddressUpdateInput!) {
+            addressUpdate(input: $input) {
+              data {
+                personalInfo { addressInfo { shipping { id street1 street2 city region postalCode country } } }
+              }
+              error {
+                ... on SecurityError { message }
+                ... on ServerError { message }
+                ... on AddressError { message }
+                ... on ValidationError { message }
+              }
+            }
+          }`,
+          { input: {
+            addressId: addrId,
+            primary: true,
+            address: {
+              firstName: validatedAddr.firstName || firstName,
+              lastName: validatedAddr.lastName || lastName,
+              country: validatedAddr.country || userCountry,
+              postalCode: validatedAddr.postalCode || '',
+              region: validatedAddr.region || '',
+              city: validatedAddr.city || '',
+              street1: validatedAddr.street1 || '',
+              street2: validatedAddr.street2 || '',
+              phone: '', receiveAlertsByPhone: false, receiveOffersByPhone: false,
+            },
+          }},
+          (updData, updErr) => {
+            const updErrMsg = updErr || updData?.addressUpdate?.error?.message;
+            if (updErrMsg) {
+              addrStatus.style.color = 'var(--sb-danger)';
+              addrStatus.textContent = '\u2718 ' + updErrMsg;
+              addrSaveBtn.disabled = false;
+              addrSaveBtn.textContent = 'Save Address';
+              return;
+            }
+            addrStatus.style.color = 'var(--sb-success-soft)';
+            addrStatus.textContent = '\u2714 Address updated.';
+            addrSaveBtn.textContent = '✔ Saved';
+            const addrStr = [validatedAddr.street1, validatedAddr.city, validatedAddr.region, validatedAddr.postalCode].filter(Boolean).join(', ');
+            mutPostComment(user.id, 'Address updated to ' + addrStr, () => {});
+            setTimeout(() => { addrSaveBtn.disabled = false; addrSaveBtn.textContent = 'Save Address'; }, 2000);
+          }
+        );
+      }
+    );
+  };
+  }
+
+  /** Edit Customer panel. Three independent sections, each owning its own inputs,
+   *  status line and mutation — they never talked to each other, which is what made
+   *  the 439-line original separable without changing any behaviour. */
   function showEditCustomerPanel(btn) {
     if (document.getElementById('sb-edit-customer-panel')) {
       removePanel('sb-edit-customer-panel'); return;
@@ -3137,434 +4145,625 @@
       const panel = createPanel({ id: 'sb-edit-customer-panel', title: '✎ Edit Customer', width: 340 });
       panel.appendChild(renderUserRow(user));
 
-      // Email section
-      panel.appendChild(makeLabel('EMAIL'));
-      const emailRow = document.createElement('div');
-      emailRow.style.cssText = 'display:flex;gap:6px;margin-bottom:12px;';
+      _editEmailSection(panel, user);
+      _editGenderSection(panel, user);
+      _editAddressSection(panel, user);
+    });
+  }
 
-      const emailInput = document.createElement('input');
-      emailInput.type = 'email';
-      emailInput.value = user.email || '';
-      emailInput.style.cssText = `
-        flex:1;padding:7px 10px;border-radius:6px;border:1px solid var(--sb-hover);
-        background:var(--sb-bg-deep);color:var(--sb-text);font-size:var(--sb-fs-12);outline:none;box-sizing:border-box;
-      `;
+  // ── Downgrade Panel ───────────────────────────────────────────────────────
+  // Plan: CRM's own "Change plan" dialog asks subscriptionAvailablePlansInquire for the
+  // plans reachable from the current one, keyed by planTransitionType (UPGRADE /
+  // DOWNGRADE / FREQUENCY). We ask for DOWNGRADE, so the list is whatever CRM considers
+  // lower for this customer — no plan ladder hardcoded here. The change itself is the
+  // dialog's subscriptionChangePlan, skipCharge:true like the UI sends.
 
-      const updateBtn = document.createElement('button');
-      updateBtn.textContent = 'Update';
-      updateBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;';
-      updateBtn.onmouseenter = () => updateBtn.style.background = '#4338ca';
-      updateBtn.onmouseleave = () => updateBtn.style.background = '#4f46e5';
+  const AVAILABLE_PLANS_QUERY = `
+    query subscriptionAvailablePlansInquire($input: SubscriptionAvailablePlansInput) {
+      subscriptionAvailablePlansInquire(input: $input) { data { code planName } error { message } }
+    }`;
+  const CHANGE_PLAN_MUTATION = `
+    mutation subscriptionChangePlan($input: SubscriptionChangePlanInput) {
+      subscriptionChangePlan(input: $input) { data { id planName } error { message } }
+    }`;
 
-      const emailStatus = makeStatusEl();
+  function showDowngradePanel(btn) {
+    if (document.getElementById('sb-downgrade-panel')) { removePanel('sb-downgrade-panel'); return; }
+    loadCustomer(btn, ({ user }) => {
+      const panel = createPanel({ id: 'sb-downgrade-panel', title: '⬇ Downgrade', width: 360 });
+      panel.appendChild(renderUserRow(user));
+      const status = makeStatusEl();
+      status.textContent = 'Loading subscription…';
+      panel.appendChild(status);
 
-      updateBtn.onclick = () => {
-        const newEmail = emailInput.value.trim();
-        if (!newEmail || !newEmail.includes('@')) {
-          emailStatus.style.color = 'var(--sb-danger)';
-          emailStatus.textContent = 'Enter a valid email.';
+      fetchUserDetails(user.id, (details, err) => {
+        const sub = (details?.subscriptionList || []).find(s => s.status === 'Active');
+        if (!sub) {
+          status.style.color = 'var(--sb-danger)';
+          status.textContent = '✘ ' + (err || 'No active subscription');
           return;
         }
-        if (newEmail === user.email) {
-          emailStatus.style.color = 'var(--sb-warning-strong)';
-          emailStatus.textContent = 'Email is unchanged.';
-          return;
-        }
-        updateBtn.disabled = true;
-        updateBtn.textContent = '⏳';
-        emailStatus.textContent = '';
-
-        gqlMutate('userChangeEmail', CHANGE_EMAIL_MUTATION,
-          { input: { userId: user.id, email: newEmail } },
-          (data, err) => {
-            const respErr = data?.userChangeEmail?.error;
-            const errMsg = err || respErr?.message;
-            if (errMsg) {
-              emailStatus.style.color = 'var(--sb-danger)';
-              emailStatus.textContent = '\u2718 ' + errMsg;
-              updateBtn.disabled = false;
-              updateBtn.textContent = 'Update';
-              return;
-            }
-            emailStatus.style.color = 'var(--sb-success-soft)';
-            emailStatus.textContent = '\u2714 Email updated.';
-            updateBtn.textContent = '✔';
-            user.email = newEmail;
-            mutPostComment(user.id, 'Email updated to ' + newEmail, () => {});
-            setTimeout(() => {
-              updateBtn.textContent = 'Update';
-              updateBtn.disabled = false;
-            }, 2000);
-          }
-        );
-      };
-
-      emailRow.appendChild(emailInput);
-      emailRow.appendChild(updateBtn);
-      panel.appendChild(emailRow);
-      panel.appendChild(emailStatus);
-
-      // ── Gender section ──────────────────────────────────────────────────
-      panel.appendChild(makeLabel('GENDER'));
-      const genderRow = document.createElement('div');
-      genderRow.style.cssText = 'display:flex;gap:6px;margin-bottom:12px;';
-
-      const currentGender = cachedCustomerCtx?._gender || '';
-      const genderSel = makeSelect([
-        { value: 'MALE', label: '♂ Male (Colognes)' },
-        { value: 'FEMALE', label: '♀ Female (Perfumes)' },
-      ], currentGender || 'MALE');
-      genderSel.style.flex = '1';
-
-      const genderBtn = document.createElement('button');
-      genderBtn.textContent = 'Update';
-      genderBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;';
-      genderBtn.onmouseenter = () => genderBtn.style.background = '#4338ca';
-      genderBtn.onmouseleave = () => genderBtn.style.background = '#4f46e5';
-
-      const genderStatus = makeStatusEl();
-
-      genderBtn.onclick = () => {
-        const newGender = genderSel.value;
-        if (newGender === currentGender) {
-          genderStatus.style.color = 'var(--sb-warning-strong)';
-          genderStatus.textContent = 'Gender is unchanged.';
-          return;
-        }
-        genderBtn.disabled = true;
-        genderBtn.textContent = '⏳';
-        genderStatus.textContent = 'Authenticating...';
-
-        ensureCustomerAuth((ok) => {
-          if (!ok) {
-            genderStatus.style.color = 'var(--sb-danger)';
-            genderStatus.textContent = '\u2718 Auth failed';
-            genderBtn.disabled = false;
-            genderBtn.textContent = 'Update';
-            return;
-          }
-          genderStatus.textContent = 'Updating gender...';
-          customerApiCall('UserPersonalInfoUpdate',
-            `mutation UserPersonalInfoUpdate($input: UserPersonalInfoUpdateInput!) {
-              userPersonalInfoUpdate(input: $input) {
-                data { id gender }
-                error {
-                  ... on SecurityError { message }
-                  ... on ServerError { message }
-                  ... on ValidationError { message }
-                }
-              }
-            }`,
-            { input: { gender: newGender } },
-            (data, err) => {
-              const respErr = data?.userPersonalInfoUpdate?.error;
-              const errMsg = err || respErr?.message;
-              if (errMsg) {
-                genderStatus.style.color = 'var(--sb-danger)';
-                genderStatus.textContent = '\u2718 ' + errMsg;
-                genderBtn.disabled = false;
-                genderBtn.textContent = 'Update';
-                return;
-              }
-              genderStatus.style.color = 'var(--sb-success-soft)';
-              genderStatus.textContent = '\u2714 Gender updated.';
-              genderBtn.textContent = '✔';
-              if (cachedCustomerCtx) cachedCustomerCtx._gender = newGender;
-              mutPostComment(user.id, 'Gender updated to ' + (newGender === 'MALE' ? 'Male' : 'Female'), () => {});
-              setTimeout(() => { genderBtn.textContent = 'Update'; genderBtn.disabled = false; }, 2000);
-            }
-          );
-        });
-      };
-
-      genderRow.appendChild(genderSel);
-      genderRow.appendChild(genderBtn);
-      panel.appendChild(genderRow);
-      panel.appendChild(genderStatus);
-
-      // ── Address section ─────────────────────────────────────────────────
-      panel.appendChild(makeLabel('SHIPPING ADDRESS'));
-
-      // Current address display
-      const shipping = user.userAddress?.shipping;
-      if (shipping) {
-        const addrDisplay = document.createElement('div');
-        addrDisplay.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-text-muted);margin-bottom:8px;line-height:1.5;';
-        addrDisplay.textContent = [shipping.street1, shipping.street2, shipping.city, shipping.region, shipping.postcode].filter(Boolean).join(', ');
-        panel.appendChild(addrDisplay);
-      }
-
-      // Container for address edit UI (hidden until auth)
-      const addrEditWrap = document.createElement('div');
-      addrEditWrap.style.cssText = 'display:none;';
-      panel.appendChild(addrEditWrap);
-
-      const addrAuthStatus = makeStatusEl();
-      panel.appendChild(addrAuthStatus);
-
-      // Update Address button — triggers auth, then reveals search
-      const updateAddrBtn = document.createElement('button');
-      updateAddrBtn.textContent = '📍 Update Address';
-      updateAddrBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #4f46e5;background:transparent;
-        color:var(--sb-accent);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
-      updateAddrBtn.onmouseenter = () => updateAddrBtn.style.background = 'rgba(79,70,229,0.1)';
-      updateAddrBtn.onmouseleave = () => updateAddrBtn.style.background = 'transparent';
-      updateAddrBtn.onclick = () => {
-        updateAddrBtn.disabled = true;
-        updateAddrBtn.textContent = '⏳ Authenticating...';
-        addrAuthStatus.textContent = '';
-
-        ensureCustomerAuth((ok) => {
-          if (!ok) {
-            addrAuthStatus.style.color = 'var(--sb-danger)';
-            addrAuthStatus.textContent = '\u2718 Authentication failed';
-            updateAddrBtn.disabled = false;
-            updateAddrBtn.textContent = '📍 Update Address';
-            return;
-          }
-          // Hide button, show search UI
-          updateAddrBtn.style.display = 'none';
-          addrAuthStatus.textContent = '';
-          addrEditWrap.style.display = '';
-        });
-      };
-      panel.appendChild(updateAddrBtn);
-
-      // Build address edit UI inside the hidden container
-      const addrInput = document.createElement('input');
-      addrInput.type = 'text';
-      addrInput.placeholder = 'Start typing new address...';
-      addrInput.style.cssText = `
-        width:100%;padding:7px 10px;border-radius:6px;border:1px solid var(--sb-hover);
-        background:var(--sb-bg-deep);color:var(--sb-text);font-size:var(--sb-fs-12);outline:none;box-sizing:border-box;
-      `;
-      addrEditWrap.appendChild(addrInput);
-
-      const addrResults = document.createElement('div');
-      addrResults.style.cssText = 'max-height:200px;overflow-y:auto;';
-      addrEditWrap.appendChild(addrResults);
-
-      const selectedAddr = document.createElement('div');
-      selectedAddr.style.cssText = 'display:none;background:var(--sb-bg-deep);border-radius:6px;padding:8px 10px;margin-top:8px;font-size:var(--sb-fs-11);color:var(--sb-text-secondary);line-height:1.6;';
-      addrEditWrap.appendChild(selectedAddr);
-
-      const addrStatus = makeStatusEl();
-      addrEditWrap.appendChild(addrStatus);
-
-      const addrSaveBtn = document.createElement('button');
-      addrSaveBtn.textContent = 'Save Address';
-      addrSaveBtn.style.cssText = 'display:none;width:100%;padding:9px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;margin-top:8px;';
-      addrSaveBtn.onmouseenter = () => addrSaveBtn.style.background = '#4338ca';
-      addrSaveBtn.onmouseleave = () => addrSaveBtn.style.background = '#4f46e5';
-      addrEditWrap.appendChild(addrSaveBtn);
-
-      let _selectedAddrData = null;
-      const userCountry = shipping?.country || 'US';
-
-      // Debounced autocomplete
-      let _addrTimer = null;
-      addrInput.addEventListener('input', () => {
-        clearTimeout(_addrTimer);
-        const q = addrInput.value.trim();
-        if (q.length < 3) { addrResults.innerHTML = ''; return; }
-
-        _addrTimer = setTimeout(() => {
-          customerApiCall('AddressAutocomplete',
-            `query AddressAutocomplete($input: AddressAutocompleteInput!) {
-              addressAutocomplete(input: $input) {
-                data { type placeId mainText secondaryText }
-              }
-            }`,
-            { input: { query: q, country: userCountry, apiVersion: 'V2' } },
-            (data, err) => {
-              addrResults.innerHTML = '';
-              if (err || !data?.addressAutocomplete?.data?.length) return;
-
-              data.addressAutocomplete.data.forEach(suggestion => {
-                const row = document.createElement('div');
-                row.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:var(--sb-fs-11);color:var(--sb-text-secondary);border-bottom:1px solid var(--sb-border-soft);';
-                row.onmouseenter = () => row.style.background = 'rgba(99,102,241,0.15)';
-                row.onmouseleave = () => row.style.background = '';
-
-                const main = document.createElement('div');
-                main.textContent = suggestion.mainText;
-                main.style.fontWeight = '600';
-                row.appendChild(main);
-
-                if (suggestion.secondaryText) {
-                  const sec = document.createElement('div');
-                  sec.style.cssText = 'color:var(--sb-text-dim);font-size:var(--sb-fs-10);';
-                  sec.textContent = suggestion.secondaryText;
-                  row.appendChild(sec);
-                }
-
-                row.onclick = () => {
-                  if (suggestion.type === 'CONTAINER') {
-                    addrInput.value = suggestion.mainText;
-                    addrInput.dispatchEvent(new Event('input', { bubbles: true }));
-                    return;
-                  }
-
-                  addrResults.innerHTML = '<div style="color:var(--sb-text-muted);font-size:var(--sb-fs-11);padding:6px 10px;">Loading details...</div>';
-                  customerApiCall('AddressDetails',
-                    `query AddressDetails($input: AddressAutocompleteDetailsInput!) {
-                      addressAutocompleteDetails(input: $input) {
-                        data { city region postalCode street1 street2 }
-                      }
-                    }`,
-                    { input: { placeId: suggestion.placeId, apiVersion: 'V2' } },
-                    (detData, detErr) => {
-                      addrResults.innerHTML = '';
-                      if (detErr || !detData?.addressAutocompleteDetails?.data) {
-                        addrStatus.style.color = 'var(--sb-danger)';
-                        addrStatus.textContent = '\u2718 Failed to load address details';
-                        return;
-                      }
-                      const addr = detData.addressAutocompleteDetails.data;
-                      _selectedAddrData = addr;
-                      addrInput.value = '';
-                      selectedAddr.style.display = '';
-                      selectedAddr.innerHTML = `
-                        <div style="font-weight:600;color:var(--sb-text);">${addr.street1 || ''}${addr.street2 ? ', ' + addr.street2 : ''}</div>
-                        <div>${addr.city || ''}, ${addr.region || ''} ${addr.postalCode || ''}</div>
-                      `;
-                      addrSaveBtn.style.display = '';
-                    }
-                  );
-                };
-
-                addrResults.appendChild(row);
-              });
-            }
-          );
-        }, 300);
+        status.textContent = '';
+        _downgradeAddOnSection(panel, user, sub);
+        _downgradePlanSection(panel, user, sub);
       });
+    });
+  }
 
-      // Save address
-      addrSaveBtn.onclick = () => {
-        if (!_selectedAddrData) return;
-        addrSaveBtn.disabled = true;
-        addrSaveBtn.textContent = 'Validating...';
-        addrStatus.textContent = '';
+  // Add-ons: CRM has one mutation per add-on, all named after the addOnSettings key
+  // (samplesSubscription → samplesSubscriptionUpdate / SamplesSubscriptionUpdateInput)
+  // and all taking { subscriptionId, enabled }. "On" means `selected`, same as the info bar.
+  const ADDON_LABELS = {
+    caseSubscription:         'Case',
+    samplesSubscription:      'Samples',
+    candleSubscription:       'Candle',
+    carScentSubscription:     'Car Scent',
+    homeDiffuserSubscription: 'Diffuser',
+  };
 
-        const firstName = (user.firstName || '').toUpperCase();
-        const lastName = (user.lastName || '').toUpperCase();
+  async function setAddOn(subscriptionId, key, on) {
+    const op = key + 'Update';
+    const type = key[0].toUpperCase() + key.slice(1) + 'UpdateInput';
+    const data = await crmQueryP(op,
+      `mutation ${op}($input: ${type}!) { ${op}(input: $input) { data { id addOnSettings { ${key} { selected } } } error { message } } }`,
+      { input: { subscriptionId, enabled: on } });
+    const r = data[op];
+    if (r?.error?.message) throw new Error(r.error.message);
+    if (!!r?.data?.addOnSettings?.[key]?.selected !== on) throw new Error(`still ${on ? 'off' : 'on'} after update`);
+  }
 
-        // Step 1: Validate
-        customerApiCall('AddressValidate',
-          `mutation AddressValidate($inputNew: AddressValidateInput!) {
-            addressValidate(inputNew: $inputNew) {
-              data {
-                address { id primary firstName lastName country city region postalCode street1 street2 phone }
-                isPrimaryAddress
-              }
-              error {
-                ... on ValidationError { message }
-                ... on AddressValidationError { message }
-                ... on SecurityError { message }
-                ... on ServerError { message }
-                ... on AmbiguousAddressError { message suggestions { id street1 street2 city region postalCode country } }
-              }
-            }
-          }`,
-          { inputNew: {
-            address: {
-              firstName, lastName, country: userCountry,
-              postalCode: _selectedAddrData.postalCode || '',
-              region: _selectedAddrData.region || '',
-              city: _selectedAddrData.city || '',
-              street1: _selectedAddrData.street1 || '',
-              street2: _selectedAddrData.street2 || '',
-              phone: '', receiveAlertsByPhone: false, receiveOffersByPhone: false,
-            },
-            apiVersion: 'V2',
-            strict: false,
-          }},
-          (valData, valErr) => {
-            const valResult = valData?.addressValidate;
-            const valErrMsg = valErr || valResult?.error?.message;
-            if (valErrMsg) {
-              addrStatus.style.color = 'var(--sb-danger)';
-              addrStatus.textContent = '\u2718 ' + valErrMsg;
-              addrSaveBtn.disabled = false;
-              addrSaveBtn.textContent = 'Save Address';
-              return;
-            }
+  /** One switch per add-on the subscription can have (`enabled` = offered, `selected`
+   *  = on). Each flip fires its own mutation straight away — it's a reversible
+   *  preference, so no arm-to-confirm — and leaves a CRM comment. */
+  function _downgradeAddOnSection(panel, user, sub) {
+    panel.appendChild(makeLabel('ADD-ONS'));
+    const keys = Object.keys(ADDON_LABELS).filter(k => sub.addOnSettings?.[k]?.enabled || sub.addOnSettings?.[k]?.selected);
+    if (!keys.length) {
+      panel.appendChild(el('div', { style: 'font-size:var(--sb-fs-12);color:var(--sb-text-dim);margin-bottom:8px;', text: 'No add-ons available.' }));
+      return;
+    }
+    const row = el('div', { cls: 'sb-row', style: 'gap:6px;flex-wrap:wrap;margin-bottom:4px;' });
+    panel.appendChild(row);
+    const status = makeStatusEl();
+    panel.appendChild(status);
 
-            const validatedAddr = valResult?.data?.address;
-            if (!validatedAddr) {
-              addrStatus.style.color = 'var(--sb-danger)';
-              addrStatus.textContent = '\u2718 Validation returned no address data';
-              addrSaveBtn.disabled = false;
-              addrSaveBtn.textContent = 'Save Address';
-              return;
-            }
+    const paint = (b, on) => {
+      b.setAttribute('aria-checked', String(on));
+      b.textContent = (on ? '● ' : '○ ') + ADDON_LABELS[b.dataset.addon];
+      b.style.cssText = on
+        ? 'padding:4px 10px;border-radius:20px;cursor:pointer;font-weight:600;font-size:var(--sb-fs-11);color:var(--sb-success-soft);background:var(--sb-tag-success-bg);border:1px solid var(--sb-tag-success-border);'
+        : 'padding:4px 10px;border-radius:20px;cursor:pointer;font-weight:600;font-size:var(--sb-fs-11);color:var(--sb-text-dim);background:transparent;border:1px solid var(--sb-control-bg);';
+    };
 
-            const addrId = validatedAddr.id || cachedCustomerCtx?._shippingAddrId;
-            if (!addrId) {
-              addrStatus.style.color = 'var(--sb-danger)';
-              addrStatus.textContent = '\u2718 No address ID available — try refreshing';
-              addrSaveBtn.disabled = false;
-              addrSaveBtn.textContent = 'Save Address';
-              return;
-            }
+    keys.forEach(k => {
+      const b = el('button', { data: { addon: k }, attrs: { role: 'switch' }, title: 'Turn ' + ADDON_LABELS[k] + ' on/off' });
+      paint(b, !!sub.addOnSettings[k].selected);
+      b.addEventListener('click', async () => {
+        const on = !sub.addOnSettings[k].selected;
+        b.disabled = true; b.style.opacity = '0.6';
+        status.style.color = ''; status.textContent = `Turning ${ADDON_LABELS[k]} ${on ? 'on' : 'off'}…`;
+        try {
+          await setAddOn(sub.id, k, on);
+          sub.addOnSettings[k].selected = on;
+          paint(b, on);
+          status.style.color = 'var(--sb-success-soft)';
+          status.textContent = `✔ ${ADDON_LABELS[k]} ${on ? 'on' : 'off'}`;
+          mutPostComment(user.id, `Add-on ${ADDON_LABELS[k]} turned ${on ? 'on' : 'off'}`, () => {});
+          refreshSubscriptionBar();
+        } catch (e) {
+          status.style.color = 'var(--sb-danger)';
+          status.textContent = `✘ ${ADDON_LABELS[k]}: ${e.message}`;
+        }
+        b.disabled = false; b.style.opacity = '';
+      });
+      row.appendChild(b);
+    });
+  }
 
-            // Step 2: Update
-            addrSaveBtn.textContent = 'Saving...';
-            customerApiCall('AddressUpdate',
-              `mutation AddressUpdate($input: AddressUpdateInput!) {
-                addressUpdate(input: $input) {
-                  data {
-                    personalInfo { addressInfo { shipping { id street1 street2 city region postalCode country } } }
-                  }
-                  error {
-                    ... on SecurityError { message }
-                    ... on ServerError { message }
-                    ... on AddressError { message }
-                    ... on ValidationError { message }
-                  }
-                }
-              }`,
-              { input: {
-                addressId: addrId,
-                primary: true,
-                address: {
-                  firstName: validatedAddr.firstName || firstName,
-                  lastName: validatedAddr.lastName || lastName,
-                  country: validatedAddr.country || userCountry,
-                  postalCode: validatedAddr.postalCode || '',
-                  region: validatedAddr.region || '',
-                  city: validatedAddr.city || '',
-                  street1: validatedAddr.street1 || '',
-                  street2: validatedAddr.street2 || '',
-                  phone: '', receiveAlertsByPhone: false, receiveOffersByPhone: false,
-                },
-              }},
-              (updData, updErr) => {
-                const updErrMsg = updErr || updData?.addressUpdate?.error?.message;
-                if (updErrMsg) {
-                  addrStatus.style.color = 'var(--sb-danger)';
-                  addrStatus.textContent = '\u2718 ' + updErrMsg;
-                  addrSaveBtn.disabled = false;
-                  addrSaveBtn.textContent = 'Save Address';
-                  return;
-                }
-                addrStatus.style.color = 'var(--sb-success-soft)';
-                addrStatus.textContent = '\u2714 Address updated.';
-                addrSaveBtn.textContent = '✔ Saved';
-                const addrStr = [validatedAddr.street1, validatedAddr.city, validatedAddr.region, validatedAddr.postalCode].filter(Boolean).join(', ');
-                mutPostComment(user.id, 'Address updated to ' + addrStr, () => {});
-                setTimeout(() => { addrSaveBtn.disabled = false; addrSaveBtn.textContent = 'Save Address'; }, 2000);
-              }
-            );
-          }
-        );
-      };
+  function _downgradePlanSection(panel, user, sub) {
+    panel.appendChild(makeLabel('PLAN'));
+    const cur = el('div', { style: 'font-size:var(--sb-fs-12);color:var(--sb-text-muted);margin-bottom:6px;',
+      text: 'Current: ' + (PLAN_LABELS[sub.planName] || sub.planName || '—') });
+    panel.appendChild(cur);
+    const row = el('div', { cls: 'sb-row', style: 'gap:6px;' });
+    const sel = el('select', { cls: 'sb-select', style: 'flex:1;min-width:0;' });
+    sel.disabled = true;
+    sel.appendChild(el('option', { text: 'Loading plans…' }));
+    const go = el('button', { cls: 'sb-btn sb-btn--danger' });
+    go.disabled = true;
+    row.appendChild(sel); row.appendChild(go);
+    panel.appendChild(row);
+    const status = makeStatusEl();
+    panel.appendChild(status);
+    const fail = (msg) => { status.style.color = 'var(--sb-danger)'; status.textContent = '✘ ' + msg; };
+
+    const cashbirdId = sub.cashbirdDetails?.data?.cashbirdId;
+    if (!cashbirdId) { sel.innerHTML = ''; return fail('No billing id on this subscription'); }
+
+    crmQueryP('subscriptionAvailablePlansInquire', AVAILABLE_PLANS_QUERY,
+      { input: { userId: user.id, cashbirdSubscriptionId: cashbirdId, planTransitionType: 'DOWNGRADE' } })
+      .then((data) => {
+        const r = data.subscriptionAvailablePlansInquire;
+        if (r?.error?.message) throw new Error(r.error.message);
+        const plans = r?.data || [];
+        sel.innerHTML = '';
+        if (!plans.length) { sel.appendChild(el('option', { text: 'Already on the lowest plan' })); return; }
+        plans.forEach(p => sel.appendChild(el('option', { text: p.planName.replace(/ subscription$/i, ''), attrs: { value: p.code } })));
+        sel.disabled = false; go.disabled = false;
+      })
+      .catch(e => { sel.innerHTML = ''; fail(e.message); });
+
+    armedButton(go, {
+      idle: 'Downgrade',
+      armed: '⚠ Confirm',
+      onFire: async () => {
+        const code = sel.value;
+        const label = sel.selectedOptions[0]?.textContent || code;
+        go.disabled = true; sel.disabled = true;
+        status.style.color = ''; status.textContent = 'Changing plan…';
+        try {
+          const data = await crmQueryP('subscriptionChangePlan', CHANGE_PLAN_MUTATION,
+            { input: { subscriptionId: sub.id, planCode: code, skipCharge: true, paymentMethodId: null } });
+          const r = data.subscriptionChangePlan;
+          if (r?.error?.message || !r?.data) throw new Error(r?.error?.message || 'No result');
+          status.style.color = 'var(--sb-success-soft)';
+          status.textContent = '✔ Plan changed to ' + label;
+          cur.textContent = 'Current: ' + (PLAN_LABELS[r.data.planName] || r.data.planName);
+          const from = PLAN_LABELS[sub.planName] || sub.planName;
+          mutPostComment(user.id, `Plan downgraded: ${from} → ${label}`, () => {});
+          refreshSubscriptionBar();
+        } catch (e) {
+          fail(e.message);
+          go.disabled = false; sel.disabled = false;
+        }
+      },
     });
   }
 
   // ── Cancel Subscription Panel ─────────────────────────────────────────────
 
+  /** Name + email header line. */
+  function _cancelInfoSection(C) {
+    // Customer info
+    const name = [C.user.firstName, C.user.lastName].filter(Boolean).join(' ') || '\u2014';
+    const infoEl = document.createElement('div');
+    infoEl.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-text-muted);margin-bottom:10px;line-height:1.6;';
+    infoEl.innerHTML = `<span style="color:var(--sb-text);font-weight:600;">${name}</span> &middot; ${C.user.email}`;
+    C.panel.appendChild(infoEl);
+
+  }
+
+  /** Last subscription order, with a Refund button when the order still
+   *  qualifies. Refundability is the same NON_REFUNDABLE_STATUSES test used
+   *  everywhere else. */
+  function _cancelOrderSection(C) {
+    // Last subscription order summary
+    const lastOrder = C.orders?.find(o => o.type === 'SUBSCRIPTION');
+    if (lastOrder) {
+      const orderEl = document.createElement('div');
+      orderEl.style.cssText = 'background:var(--sb-bg-row);border-radius:6px;padding:8px 10px;margin-bottom:12px;border-left:2px solid var(--sb-solid-primary);';
+      const monthLbl = orderMonthLabel(lastOrder);
+      const ws = lastOrder.warehouseOrder?.data?.status || lastOrder.status || '';
+      const wsUC = ws.toUpperCase();
+      const statusColor = wsUC === 'DONE' ? 'var(--sb-success-soft)' : 'var(--sb-danger)';
+      const lines = orderProductLines(lastOrder);
+
+      const orderTop = document.createElement('div');
+      orderTop.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;';
+
+      const orderInfo = document.createElement('div');
+      orderInfo.innerHTML = `<div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;">
+        <span style="color:var(--sb-text-muted);font-size:var(--sb-fs-11);">${monthLbl}</span>
+        <span style="color:${statusColor};font-size:var(--sb-fs-11);font-weight:600;">${ws}</span>
+      </div>` + lines.map(l => `<div style="color:var(--sb-text-secondary);font-size:var(--sb-fs-11);">${l}</div>`).join('');
+
+      // Tracking
+      const trackNo  = lastOrder.tracking?.trackingNumber || lastOrder.shipment?.trackingNumber || '';
+      const trackUrl = lastOrder.tracking?.trackingUrl  || lastOrder.shipment?.trackingUrl  || '';
+      const trackItems = lastOrder.tracking?.items || [];
+      if (trackNo) {
+        const tRow = document.createElement('div');
+        tRow.style.cssText = 'display:flex;align-items:center;gap:4px;margin-top:4px;flex-wrap:wrap;';
+        if (trackUrl) {
+          const a = document.createElement('a');
+          a.href = trackUrl; a.target = '_blank';
+          a.textContent = trackNo;
+          a.style.cssText = 'color:var(--sb-accent-strong);font-size:var(--sb-fs-11);text-decoration:none;';
+          tRow.appendChild(a);
+          const copyBtn = document.createElement('button');
+          copyBtn.textContent = '\uD83D\uDD17';
+          copyBtn.title = 'Copy tracking link';
+          copyBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--sb-accent-strong);font-size:var(--sb-fs-12);padding:0 2px;';
+          copyBtn.onclick = () => {
+            navigator.clipboard.write([
+              new ClipboardItem({
+                'text/html':  new Blob([`<a href="${trackUrl}">${trackNo}</a>`], { type: 'text/html' }),
+                'text/plain': new Blob([trackUrl], { type: 'text/plain' }),
+              })
+            ]);
+            copyBtn.textContent = '\u2714'; setTimeout(() => copyBtn.textContent = '\uD83D\uDD17', 1500);
+          };
+          tRow.appendChild(copyBtn);
+        } else {
+          const sp = document.createElement('span');
+          sp.style.cssText = 'color:var(--sb-accent-strong);font-size:var(--sb-fs-11);';
+          sp.textContent = trackNo;
+          tRow.appendChild(sp);
+        }
+        orderInfo.appendChild(tRow);
+      }
+      if (trackItems.length) {
+        const evEl = document.createElement('div');
+        evEl.style.cssText = 'margin-top:3px;';
+        trackItems.slice(-2).forEach(item => {
+          const d = document.createElement('div');
+          d.style.cssText = 'color:var(--sb-text-dim);font-size:var(--sb-fs-11);margin-top:1px;';
+          const dt = new Date(item.date).toLocaleDateString('en-US', { month:'short', day:'numeric' });
+          d.textContent = dt + ' · ' + item.description;
+          evEl.appendChild(d);
+        });
+        orderInfo.appendChild(evEl);
+      }
+      orderTop.appendChild(orderInfo);
+
+      // Refund button
+      // Always offered on the last order — no fulfilment-status gate (2026-10-13).
+      const refundable = true;
+      const orderRefBtn = document.createElement('button');
+      orderRefBtn.textContent = '💰 Refund';
+      orderRefBtn.title = 'Open refund charges';
+      orderRefBtn.style.cssText = `
+        margin-left:8px;padding:3px 8px;border-radius:5px;border:none;font-size:var(--sb-fs-11);font-weight:600;
+        white-space:nowrap;flex-shrink:0;
+        cursor:${refundable ? 'pointer' : 'not-allowed'};
+        background:${refundable ? 'var(--sb-solid-violet)' : 'var(--sb-solid-violet-dim)'};
+        color:${refundable ? 'var(--sb-on-solid)' : 'var(--sb-text-dim)'};
+      `;
+      if (refundable) {
+        orderRefBtn.onmouseenter = () => orderRefBtn.style.background = 'var(--sb-solid-violet-hi)';
+        orderRefBtn.onmouseleave = () => orderRefBtn.style.background = 'var(--sb-solid-violet)';
+        orderRefBtn.onclick = () => showRefundChargesPanel(C.user);
+      }
+      orderTop.appendChild(orderRefBtn);
+      orderEl.appendChild(orderTop);
+      C.panel.appendChild(orderEl);
+    }
+
+  }
+
+  /** The cancel-subscription control itself, plus the status line every other
+   *  section writes into. Disabled — not hidden — when the sub is already
+   *  cancelled, so the panel still says why. */
+  function _cancelCancelSection(C) {
+    const statusEl = C.statusEl = makeStatusEl();
+    C.panel.appendChild(statusEl);
+
+    if (C.isAlreadyCancelled) {
+      const subStatusEl = document.createElement('div');
+      subStatusEl.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-warning-strong);margin-bottom:10px;';
+      subStatusEl.textContent = C.isAwaitingCancel
+        ? '⚠ Subscription is already scheduled for cancellation'
+        : '⚠ Subscription status: ' + C.subStatus;
+      C.panel.appendChild(subStatusEl);
+    }
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.textContent = 'Cancel Subscription';
+    confirmBtn.disabled = C.isAlreadyCancelled;
+    confirmBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:none;font-weight:700;font-size:var(--sb-fs-13);box-sizing:border-box;
+      background:${C.isAlreadyCancelled ? 'var(--sb-solid-disabled)' : 'var(--sb-danger-border)'};
+      color:${C.isAlreadyCancelled ? 'var(--sb-text-dim)' : 'var(--sb-on-solid)'};
+      cursor:${C.isAlreadyCancelled ? 'not-allowed' : 'pointer'};`;
+    if (!C.isAlreadyCancelled) {
+      confirmBtn.onmouseenter = () => confirmBtn.style.background = 'var(--sb-solid-danger-hi)';
+      confirmBtn.onmouseleave = () => confirmBtn.style.background = 'var(--sb-danger-border)';
+    }
+
+    confirmBtn.onclick = async () => {
+      confirmBtn.disabled = true;
+      statusEl.style.color = 'var(--sb-text-muted)';
+      statusEl.textContent = '';
+      try {
+        await executeCancelSubscription(C.user, (msg) => {
+          confirmBtn.textContent = msg;
+          statusEl.textContent = msg;
+        });
+        statusEl.style.color = 'var(--sb-success-soft)';
+        statusEl.textContent = '\u2714 Subscription cancelled.';
+        confirmBtn.textContent = '\u2714 Done';
+      } catch (e) {
+        statusEl.style.color = 'var(--sb-danger)';
+        statusEl.textContent = '\u2718 ' + (e.message || e);
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = 'Confirm Cancellation';
+      }
+    };
+
+    C.panel.appendChild(confirmBtn);
+
+  }
+
+  /** "Unsubscribe from Emails" — red outline to match Delete Payment Methods, which it
+   *  sits beside. Confirm-on-second-click. Returns { btn, status }. */
+  function _cancelUnsubButton(C) {
+    const idleCss = `flex:1;padding:9px;border-radius:6px;border:1px solid var(--sb-danger-border);background:transparent;
+      color:var(--sb-danger);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
+    const btn = el('button', { style: idleCss });
+    btn.onmouseenter = () => { if (!btn.disabled) btn.style.background = 'rgba(220,38,38,0.1)'; };
+    btn.onmouseleave = () => { btn.style.background = 'transparent'; };
+    const status = makeStatusEl();
+    armedButton(btn, {
+      idle: '✉ Unsubscribe from Emails',
+      armed: '⚠ Click again',
+      onFire: async () => {
+        btn.disabled = true; btn.textContent = '⏳ Unsubscribing…';
+        try {
+          await crmUnsubscribeEmail(C.user.email);
+          btn.textContent = '✔ Unsubscribed';
+          btn.style.color = 'var(--sb-success-soft)';
+          btn.style.borderColor = 'var(--sb-success-soft)';
+          btn.style.cursor = 'default';
+          status.textContent = '';
+          mutPostComment(C.user.id, 'Unsubscribed from emails', () => {});
+        } catch (e) {
+          btn.disabled = false; btn.textContent = '✉ Unsubscribe from Emails';
+          status.style.color = 'var(--sb-danger)';
+          status.textContent = '✘ ' + (e.message || e);
+        }
+      },
+    });
+    return { btn, status };
+  }
+
+  /** Delete stored payment methods. */
+  function _cancelPmSection(C) {
+    // ── Delete Payment Methods ────────────────────────────────────────
+    const pmSep = document.createElement('div');
+    pmSep.style.cssText = 'height:1px;background:var(--sb-control-bg);margin:12px 0;';
+    C.panel.appendChild(pmSep);
+
+    const delPmBtn = document.createElement('button');
+    delPmBtn.textContent = '🗑 Delete Payment Methods';
+    delPmBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid var(--sb-danger-border);background:transparent;
+      color:var(--sb-danger);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
+    delPmBtn.onmouseenter = () => delPmBtn.style.background = 'rgba(220,38,38,0.1)';
+    delPmBtn.onmouseleave = () => delPmBtn.style.background = 'transparent';
+    delPmBtn.onclick = () => {
+      const { overlay, box } = createModal({ id: 'sb-del-pm-overlay', title: '🗑 Delete All Payment Methods', width: 320 });
+
+      const warnEl = document.createElement('div');
+      warnEl.style.cssText = 'background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.3);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:var(--sb-danger);line-height:1.6;';
+      warnEl.innerHTML = `This will permanently remove <strong>all stored payment methods</strong> for:<br><br>
+        <span style="color:var(--sb-text);font-weight:600;">${name}</span><br>
+        <span style="color:var(--sb-text-muted);">${C.user.email}</span><br><br>
+        This action cannot be undone.`;
+      box.appendChild(warnEl);
+
+      const pmStatus = makeStatusEl();
+      box.appendChild(pmStatus);
+
+      box.appendChild(makeDialogButtons({
+        confirmLabel: 'Delete All',
+        confirmColor: 'var(--sb-danger-border)',
+        onCancel: () => overlay.remove(),
+        onConfirm: (cBtn) => {
+          cBtn.disabled = true;
+          cBtn.textContent = 'Deleting...';
+          gqlMutate('deleteAllPaymentMethods', DELETE_PAYMENT_METHODS_MUTATION,
+            { input: { userId: C.user.id } },
+            (data, err) => {
+              const respErr = data?.paymentMethodDeleteAll?.error;
+              const errMsg = err || respErr?.message || respErr?.serverErrorMessage;
+              if (errMsg) {
+                pmStatus.style.color = 'var(--sb-danger)';
+                pmStatus.textContent = '\u2718 ' + errMsg;
+                cBtn.disabled = false;
+                cBtn.textContent = 'Delete All';
+                return;
+              }
+              pmStatus.style.color = 'var(--sb-success-soft)';
+              pmStatus.textContent = '\u2714 All payment methods deleted.';
+              cBtn.textContent = '\u2714 Done';
+              delPmBtn.disabled = true;
+              delPmBtn.textContent = '\u2714 Payment Methods Deleted';
+              delPmBtn.style.color = 'var(--sb-success-soft)';
+              delPmBtn.style.borderColor = 'var(--sb-success-soft)';
+              delPmBtn.style.cursor = 'default';
+              mutPostComment(C.user.id, 'Billing method removed', () => {});
+              autoClose(() => overlay.remove());
+            }
+          );
+        },
+      }));
+    };
+    // Delete Payment Methods + Unsubscribe from Emails share one row.
+    delPmBtn.style.width = 'auto'; delPmBtn.style.flex = '1';
+    const unsub = _cancelUnsubButton(C);
+    C.panel.appendChild(el('div', { style: 'display:flex;gap:6px;' }, [delPmBtn, unsub.btn]));
+    C.panel.appendChild(unsub.status);
+
+  }
+
+  /** Delete the account outright. */
+  function _cancelAccSection(C) {
+    // ── Delete Account ────────────────────────────────────────────────
+    const delAccBtn = document.createElement('button');
+    delAccBtn.textContent = '⛔ Delete Account';
+    delAccBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid var(--sb-danger-strong);background:transparent;
+      color:var(--sb-danger);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;margin-top:6px;`;
+    delAccBtn.onmouseenter = () => delAccBtn.style.background = 'rgba(153,27,27,0.15)';
+    delAccBtn.onmouseleave = () => delAccBtn.style.background = 'transparent';
+    delAccBtn.onclick = () => {
+      const { overlay, box } = createModal({ id: 'sb-del-acc-overlay', title: '⛔ Delete Account', width: 320 });
+
+      const warnEl = document.createElement('div');
+      warnEl.style.cssText = 'background:rgba(153,27,27,0.15);border:1px solid rgba(153,27,27,0.4);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:var(--sb-danger);line-height:1.6;';
+      warnEl.innerHTML = `This will:<br>
+        <span style="color:var(--sb-text);">1.</span> Remove all payment methods<br>
+        <span style="color:var(--sb-text);">2.</span> Disable the account email<br><br>
+        <span style="color:var(--sb-text);font-weight:600;">${name}</span><br>
+        <span style="color:var(--sb-text-muted);">${C.user.email}</span><br><br>
+        This action cannot be undone.`;
+      box.appendChild(warnEl);
+
+      const accStatus = makeStatusEl();
+      box.appendChild(accStatus);
+
+      box.appendChild(makeDialogButtons({
+        confirmLabel: 'Delete Account',
+        confirmColor: 'var(--sb-danger-strong)',
+        onCancel: () => overlay.remove(),
+        onConfirm: (cBtn) => {
+          cBtn.disabled = true;
+          cBtn.textContent = 'Deleting...';
+          accStatus.textContent = 'Removing payment methods...';
+
+          // Step 1: Delete payment methods (skip if fails)
+          gqlMutate('deleteAllPaymentMethods', DELETE_PAYMENT_METHODS_MUTATION,
+            { input: { userId: C.user.id } },
+            (pmData, pmErr) => {
+              // Step 2: Disable email
+              accStatus.textContent = 'Disabling account email...';
+              const [localPart, domain] = C.user.email.split('@');
+              const rand = Math.floor(Math.random() * 900000000) + 100000000;
+              const disabledEmail = localPart + '_disabled' + rand + '@' + domain;
+
+              gqlMutate('userChangeEmail', CHANGE_EMAIL_MUTATION,
+                { input: { userId: C.user.id, email: disabledEmail } },
+                (emailData, emailErr) => {
+                  const respErr = emailData?.userChangeEmail?.error;
+                  const errMsg = emailErr || respErr?.message;
+                  if (errMsg) {
+                    accStatus.style.color = 'var(--sb-danger)';
+                    accStatus.textContent = '\u2718 ' + errMsg;
+                    cBtn.disabled = false;
+                    cBtn.textContent = 'Delete Account';
+                    return;
+                  }
+                  accStatus.style.color = 'var(--sb-success-soft)';
+                  accStatus.textContent = '\u2714 Account deleted.';
+                  cBtn.textContent = '\u2714 Done';
+                  delAccBtn.disabled = true;
+                  delAccBtn.textContent = '\u2714 Account Deleted';
+                  delAccBtn.style.color = 'var(--sb-success-soft)';
+                  delAccBtn.style.borderColor = 'var(--sb-success-soft)';
+                  delAccBtn.style.cursor = 'default';
+                  mutPostComment(C.user.id, 'Account deleted', () => {});
+                  autoClose(() => overlay.remove());
+                }
+              );
+            }
+          );
+        },
+      }));
+    };
+    C.panel.appendChild(delAccBtn);
+
+  }
+
+  /** Fraud blocklist add/remove. Reads its current state from cachedCustomerCtx. */
+  function _cancelFraudSection(C) {
+    // ── Fraud Blocklist Toggle ────────────────────────────────────────
+    const fraudBtn = document.createElement('button');
+    fraudBtn.textContent = '🚫 Blocklist (Fraud)';
+    fraudBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid var(--sb-solid-violet);background:transparent;
+      color:var(--sb-tag-plan-fg);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;margin-top:6px;`;
+    fraudBtn.onmouseenter = () => fraudBtn.style.background = 'rgba(124,58,237,0.1)';
+    fraudBtn.onmouseleave = () => fraudBtn.style.background = 'transparent';
+
+    // Use cached fraud status from initial user details query
+    const cachedFraudStatus = cachedCustomerCtx?._fraudStatus || 'DEFAULT';
+    fraudBtn._currentStatus = cachedFraudStatus;
+    if (cachedFraudStatus === 'DECLINE') {
+      fraudBtn.textContent = '✔ Blocklisted (Fraud)';
+      fraudBtn.style.color = 'var(--sb-danger-strong)';
+      fraudBtn.style.borderColor = 'var(--sb-danger-strong)';
+    }
+
+    fraudBtn.onclick = () => {
+      const newStatus = (fraudBtn._currentStatus === 'DECLINE') ? 'DEFAULT' : 'DECLINE';
+      const isAdding = newStatus === 'DECLINE';
+
+      const { overlay, box } = createModal({
+        id: 'sb-fraud-confirm-dialog',
+        title: isAdding ? '🚫 Confirm Blocklist' : '✅ Remove from Blocklist',
+        width: 360,
+      });
+
+      const intro = document.createElement('div');
+      intro.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-text-muted);margin-bottom:10px;';
+      intro.textContent = isAdding
+        ? `Add ${C.user.email} to the fraud blocklist?`
+        : `Remove ${C.user.email} from the fraud blocklist?`;
+      box.appendChild(intro);
+
+      box.appendChild(makeLabel('Comment (optional)'));
+      const ta = document.createElement('textarea');
+      ta.rows = 3;
+      ta.placeholder = isAdding ? 'Reason for blocklisting…' : 'Reason for unblocklisting…';
+      ta.style.cssText = 'width:100%;background:var(--sb-bg-deep);color:var(--sb-text);border:1px solid var(--sb-border);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-12);box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;margin-bottom:10px;';
+      box.appendChild(ta);
+
+      const dlgStatus = makeStatusEl();
+      box.appendChild(dlgStatus);
+
+      const btns = makeDialogButtons({
+        confirmLabel: isAdding ? 'Blocklist' : 'Remove',
+        confirmColor: isAdding ? 'var(--sb-danger-border)' : 'var(--sb-solid-success)',
+        onCancel: () => overlay.remove(),
+        onConfirm: (confirmBtn, cancelBtn) => {
+          confirmBtn.disabled = true; cancelBtn.disabled = true;
+          confirmBtn.textContent = isAdding ? 'Blocklisting…' : 'Removing…';
+          dlgStatus.style.color = 'var(--sb-text-muted)';
+          dlgStatus.textContent = '';
+
+          gqlMutate('userSetFraudStatus', SET_FRAUD_STATUS_MUTATION,
+            { input: { userId: C.user.id, status: newStatus } },
+            (data, err) => {
+              const respErr = data?.userSetFraudStatus?.error;
+              const errMsg = err || respErr?.message;
+              if (errMsg) {
+                dlgStatus.style.color = 'var(--sb-danger)';
+                dlgStatus.textContent = '\u2718 ' + errMsg;
+                confirmBtn.disabled = false; cancelBtn.disabled = false;
+                confirmBtn.textContent = isAdding ? 'Blocklist' : 'Remove';
+                return;
+              }
+
+              const base = isAdding ? 'Fraud blocklist applied' : 'Fraud blocklist removed';
+              const note = ta.value.trim();
+              const comment = note ? `${base} — ${note}` : base;
+
+              dlgStatus.textContent = 'Posting comment…';
+              mutPostComment(C.user.id, comment, () => {
+                fraudBtn._currentStatus = newStatus;
+                if (newStatus === 'DECLINE') {
+                  fraudBtn.textContent = '✔ Blocklisted (Fraud)';
+                  fraudBtn.style.color = 'var(--sb-danger-strong)';
+                  fraudBtn.style.borderColor = 'var(--sb-danger-strong)';
+                } else {
+                  fraudBtn.textContent = '🚫 Blocklist (Fraud)';
+                  fraudBtn.style.color = 'var(--sb-tag-plan-fg)';
+                  fraudBtn.style.borderColor = 'var(--sb-solid-violet)';
+                }
+                fraudBtn.disabled = false;
+                dlgStatus.style.color = 'var(--sb-success-soft)';
+                dlgStatus.textContent = '✔ Done!';
+                autoClose(() => overlay.remove());
+              });
+            }
+          );
+        },
+      });
+      box.appendChild(btns);
+    };
+    C.panel.appendChild(fraudBtn);
+  }
+
+  /** Cancel Subscription panel. Six sections that share one context object and
+   *  one re-render: every destructive action here ends by calling C.render(), so
+   *  the panel always reflects the account state it just changed. Split out of a
+   *  402-line builder whose sections communicated only through those locals. */
   function showCancelPanel(btn) {
     if (document.getElementById('sb-cancel-panel')) {
       removePanel('sb-cancel-panel'); return;
@@ -3574,411 +4773,30 @@
       if (!result) return;
       const { user } = result;
       const panel = createPanel({ id: 'sb-cancel-panel', title: '❌ Cancel Subscription', width: 320 });
+
       function render() {
+        // Everything but the user row is rebuilt; the row is index 0 after the header.
         [...panel.children].slice(1).forEach(c => c.remove());
         loadCustomerOrders(user.id, (orders) => {
-        if (!document.getElementById('sb-cancel-panel')) return;
+          if (!document.getElementById('sb-cancel-panel')) return;
 
-        const subStatus = user.subscription?.status || '';
-        const hasRecentSubOrder = (orders || []).some(o => o.type === 'SUBSCRIPTION' || !o.type);
-        const isAwaitingCancel = !!cachedCustomerCtx?._isAwaitCancellation;
-        const isAlreadyCancelled = subStatus.toLowerCase() === 'cancelled' || isAwaitingCancel;
+          const subStatus = user.subscription?.status || '';
+          const isAwaitingCancel = !!cachedCustomerCtx?._isAwaitCancellation;
+          const C = {
+            panel, user, orders, subStatus, isAwaitingCancel, render,
+            hasRecentSubOrder: (orders || []).some(o => o.type === 'SUBSCRIPTION' || !o.type),
+            isAlreadyCancelled: subStatus.toLowerCase() === 'cancelled' || isAwaitingCancel,
+            // Set by the cancel section, written to by all the others.
+            statusEl: null,
+          };
 
-        // Customer info
-        const name = [user.firstName, user.lastName].filter(Boolean).join(' ') || '\u2014';
-        const infoEl = document.createElement('div');
-        infoEl.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-text-muted);margin-bottom:10px;line-height:1.6;';
-        infoEl.innerHTML = `<span style="color:var(--sb-text);font-weight:600;">${name}</span> &middot; ${user.email}`;
-        panel.appendChild(infoEl);
-
-        // Last subscription order summary
-        const lastOrder = orders?.find(o => o.type === 'SUBSCRIPTION');
-        if (lastOrder) {
-          const orderEl = document.createElement('div');
-          orderEl.style.cssText = 'background:var(--sb-bg-row);border-radius:6px;padding:8px 10px;margin-bottom:12px;border-left:2px solid #4f46e5;';
-          const monthLbl = orderMonthLabel(lastOrder);
-          const ws = lastOrder.warehouseOrder?.data?.status || lastOrder.status || '';
-          const wsUC = ws.toUpperCase();
-          const statusColor = wsUC === 'DONE' ? 'var(--sb-success-soft)' : 'var(--sb-danger)';
-          const lines = orderProductLines(lastOrder);
-
-          const orderTop = document.createElement('div');
-          orderTop.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;';
-
-          const orderInfo = document.createElement('div');
-          orderInfo.innerHTML = `<div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;">
-            <span style="color:var(--sb-text-muted);font-size:var(--sb-fs-11);">${monthLbl}</span>
-            <span style="color:${statusColor};font-size:var(--sb-fs-11);font-weight:600;">${ws}</span>
-          </div>` + lines.map(l => `<div style="color:var(--sb-text-secondary);font-size:var(--sb-fs-11);">${l}</div>`).join('');
-
-          // Tracking
-          const trackNo  = lastOrder.tracking?.trackingNumber || lastOrder.shipment?.trackingNumber || '';
-          const trackUrl = lastOrder.tracking?.trackingUrl  || lastOrder.shipment?.trackingUrl  || '';
-          const trackItems = lastOrder.tracking?.items || [];
-          if (trackNo) {
-            const tRow = document.createElement('div');
-            tRow.style.cssText = 'display:flex;align-items:center;gap:4px;margin-top:4px;flex-wrap:wrap;';
-            if (trackUrl) {
-              const a = document.createElement('a');
-              a.href = trackUrl; a.target = '_blank';
-              a.textContent = trackNo;
-              a.style.cssText = 'color:var(--sb-accent-strong);font-size:var(--sb-fs-11);text-decoration:none;';
-              tRow.appendChild(a);
-              const copyBtn = document.createElement('button');
-              copyBtn.textContent = '\uD83D\uDD17';
-              copyBtn.title = 'Copy tracking link';
-              copyBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--sb-accent-strong);font-size:var(--sb-fs-12);padding:0 2px;';
-              copyBtn.onclick = () => {
-                navigator.clipboard.write([
-                  new ClipboardItem({
-                    'text/html':  new Blob([`<a href="${trackUrl}">${trackNo}</a>`], { type: 'text/html' }),
-                    'text/plain': new Blob([trackUrl], { type: 'text/plain' }),
-                  })
-                ]);
-                copyBtn.textContent = '\u2714'; setTimeout(() => copyBtn.textContent = '\uD83D\uDD17', 1500);
-              };
-              tRow.appendChild(copyBtn);
-            } else {
-              const sp = document.createElement('span');
-              sp.style.cssText = 'color:var(--sb-accent-strong);font-size:var(--sb-fs-11);';
-              sp.textContent = trackNo;
-              tRow.appendChild(sp);
-            }
-            orderInfo.appendChild(tRow);
-          }
-          if (trackItems.length) {
-            const evEl = document.createElement('div');
-            evEl.style.cssText = 'margin-top:3px;';
-            trackItems.slice(-2).forEach(item => {
-              const d = document.createElement('div');
-              d.style.cssText = 'color:var(--sb-text-dim);font-size:var(--sb-fs-11);margin-top:1px;';
-              const dt = new Date(item.date).toLocaleDateString('en-US', { month:'short', day:'numeric' });
-              d.textContent = dt + ' · ' + item.description;
-              evEl.appendChild(d);
-            });
-            orderInfo.appendChild(evEl);
-          }
-          orderTop.appendChild(orderInfo);
-
-          // Refund button
-          const wsUpper = ws.toUpperCase();
-          const refundable = !NON_REFUNDABLE_STATUSES.includes(wsUpper);
-          const orderRefBtn = document.createElement('button');
-          orderRefBtn.textContent = '💰 Refund';
-          orderRefBtn.disabled = !refundable;
-          orderRefBtn.title = refundable ? 'Open refund charges' : 'Order cannot be refunded at this stage (' + ws + ')';
-          orderRefBtn.style.cssText = `
-            margin-left:8px;padding:3px 8px;border-radius:5px;border:none;font-size:var(--sb-fs-11);font-weight:600;
-            white-space:nowrap;flex-shrink:0;
-            cursor:${refundable ? 'pointer' : 'not-allowed'};
-            background:${refundable ? '#7c3aed' : 'rgba(124,58,237,0.2)'};
-            color:${refundable ? '#fff' : 'var(--sb-text-dim)'};
-          `;
-          if (refundable) {
-            orderRefBtn.onmouseenter = () => orderRefBtn.style.background = '#6d28d9';
-            orderRefBtn.onmouseleave = () => orderRefBtn.style.background = '#7c3aed';
-            orderRefBtn.onclick = () => showRefundChargesPanel(user);
-          }
-          orderTop.appendChild(orderRefBtn);
-          orderEl.appendChild(orderTop);
-          panel.appendChild(orderEl);
-        }
-
-        const statusEl = makeStatusEl();
-        panel.appendChild(statusEl);
-
-        if (isAlreadyCancelled) {
-          const subStatusEl = document.createElement('div');
-          subStatusEl.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-warning-strong);margin-bottom:10px;';
-          subStatusEl.textContent = isAwaitingCancel
-            ? '⚠ Subscription is already scheduled for cancellation'
-            : '⚠ Subscription status: ' + subStatus;
-          panel.appendChild(subStatusEl);
-        }
-
-        const confirmBtn = document.createElement('button');
-        confirmBtn.textContent = 'Cancel Subscription';
-        confirmBtn.disabled = isAlreadyCancelled;
-        confirmBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:none;font-weight:700;font-size:var(--sb-fs-13);box-sizing:border-box;
-          background:${isAlreadyCancelled ? '#374151' : 'var(--sb-danger-border)'};
-          color:${isAlreadyCancelled ? '#6b7280' : '#fff'};
-          cursor:${isAlreadyCancelled ? 'not-allowed' : 'pointer'};`;
-        if (!isAlreadyCancelled) {
-          confirmBtn.onmouseenter = () => confirmBtn.style.background = '#b91c1c';
-          confirmBtn.onmouseleave = () => confirmBtn.style.background = 'var(--sb-danger-border)';
-        }
-
-        confirmBtn.onclick = () => {
-          confirmBtn.disabled = true;
-          confirmBtn.textContent = 'Fetching subscription...';
-          statusEl.textContent = '';
-
-          fetchActiveSubscription(user.id, (subscriptionId, fetchErr) => {
-            if (fetchErr || !subscriptionId) {
-              statusEl.style.color = 'var(--sb-danger)';
-              statusEl.textContent = '\u2718 ' + (fetchErr || 'No active subscription found.');
-              confirmBtn.disabled = false;
-              confirmBtn.textContent = 'Confirm Cancellation';
-              return;
-            }
-            confirmBtn.textContent = 'Cancelling...';
-            mutCancelSub(subscriptionId, (data, cancelErr) => {
-              if (cancelErr) {
-                statusEl.style.color = 'var(--sb-danger)';
-                statusEl.textContent = '\u2718 ' + cancelErr;
-                confirmBtn.disabled = false;
-                confirmBtn.textContent = 'Confirm Cancellation';
-                return;
-              }
-              statusEl.style.color = 'var(--sb-text-muted)';
-              statusEl.textContent = 'Posting comment...';
-              mutPostComment(user.id, 'Subscription Cancelled', () => {
-                statusEl.style.color = 'var(--sb-success-soft)';
-                statusEl.textContent = '\u2714 Subscription cancelled.';
-                confirmBtn.textContent = '\u2714 Done';
-                // Update cache so reopening the panel sees it as already cancelled
-                if (cachedCustomerCtx?.user) {
-                  if (!cachedCustomerCtx.user.subscription) cachedCustomerCtx.user.subscription = {};
-                  cachedCustomerCtx.user.subscription.status = 'Cancelled';
-                }
-                refreshOpenPanels('sb-cancel-panel');
-              });
-            });
-          });
-        };
-
-        panel.appendChild(confirmBtn);
-
-        // ── Delete Payment Methods ────────────────────────────────────────
-        const pmSep = document.createElement('div');
-        pmSep.style.cssText = 'height:1px;background:var(--sb-control-bg);margin:12px 0;';
-        panel.appendChild(pmSep);
-
-        const delPmBtn = document.createElement('button');
-        delPmBtn.textContent = '🗑 Delete Payment Methods';
-        delPmBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid var(--sb-danger-border);background:transparent;
-          color:var(--sb-danger);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;`;
-        delPmBtn.onmouseenter = () => delPmBtn.style.background = 'rgba(220,38,38,0.1)';
-        delPmBtn.onmouseleave = () => delPmBtn.style.background = 'transparent';
-        delPmBtn.onclick = () => {
-          const { overlay, box } = createModal({ id: 'sb-del-pm-overlay', title: '🗑 Delete All Payment Methods', width: 320 });
-
-          const warnEl = document.createElement('div');
-          warnEl.style.cssText = 'background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.3);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:var(--sb-danger);line-height:1.6;';
-          warnEl.innerHTML = `This will permanently remove <strong>all stored payment methods</strong> for:<br><br>
-            <span style="color:var(--sb-text);font-weight:600;">${name}</span><br>
-            <span style="color:var(--sb-text-muted);">${user.email}</span><br><br>
-            This action cannot be undone.`;
-          box.appendChild(warnEl);
-
-          const pmStatus = makeStatusEl();
-          box.appendChild(pmStatus);
-
-          box.appendChild(makeDialogButtons({
-            confirmLabel: 'Delete All',
-            confirmColor: 'var(--sb-danger-border)',
-            onCancel: () => overlay.remove(),
-            onConfirm: (cBtn) => {
-              cBtn.disabled = true;
-              cBtn.textContent = 'Deleting...';
-              gqlMutate('deleteAllPaymentMethods', DELETE_PAYMENT_METHODS_MUTATION,
-                { input: { userId: user.id } },
-                (data, err) => {
-                  const respErr = data?.paymentMethodDeleteAll?.error;
-                  const errMsg = err || respErr?.message || respErr?.serverErrorMessage;
-                  if (errMsg) {
-                    pmStatus.style.color = 'var(--sb-danger)';
-                    pmStatus.textContent = '\u2718 ' + errMsg;
-                    cBtn.disabled = false;
-                    cBtn.textContent = 'Delete All';
-                    return;
-                  }
-                  pmStatus.style.color = 'var(--sb-success-soft)';
-                  pmStatus.textContent = '\u2714 All payment methods deleted.';
-                  cBtn.textContent = '\u2714 Done';
-                  delPmBtn.disabled = true;
-                  delPmBtn.textContent = '\u2714 Payment Methods Deleted';
-                  delPmBtn.style.color = 'var(--sb-success-soft)';
-                  delPmBtn.style.borderColor = 'var(--sb-success-soft)';
-                  delPmBtn.style.cursor = 'default';
-                  mutPostComment(user.id, 'Billing method removed', () => {});
-                  autoClose(() => overlay.remove());
-                }
-              );
-            },
-          }));
-        };
-        panel.appendChild(delPmBtn);
-
-        // ── Delete Account ────────────────────────────────────────────────
-        const delAccBtn = document.createElement('button');
-        delAccBtn.textContent = '⛔ Delete Account';
-        delAccBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #991b1b;background:transparent;
-          color:var(--sb-danger);font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;margin-top:6px;`;
-        delAccBtn.onmouseenter = () => delAccBtn.style.background = 'rgba(153,27,27,0.15)';
-        delAccBtn.onmouseleave = () => delAccBtn.style.background = 'transparent';
-        delAccBtn.onclick = () => {
-          const { overlay, box } = createModal({ id: 'sb-del-acc-overlay', title: '⛔ Delete Account', width: 320 });
-
-          const warnEl = document.createElement('div');
-          warnEl.style.cssText = 'background:rgba(153,27,27,0.15);border:1px solid rgba(153,27,27,0.4);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:var(--sb-fs-12);color:var(--sb-danger);line-height:1.6;';
-          warnEl.innerHTML = `This will:<br>
-            <span style="color:var(--sb-text);">1.</span> Remove all payment methods<br>
-            <span style="color:var(--sb-text);">2.</span> Disable the account email<br><br>
-            <span style="color:var(--sb-text);font-weight:600;">${name}</span><br>
-            <span style="color:var(--sb-text-muted);">${user.email}</span><br><br>
-            This action cannot be undone.`;
-          box.appendChild(warnEl);
-
-          const accStatus = makeStatusEl();
-          box.appendChild(accStatus);
-
-          box.appendChild(makeDialogButtons({
-            confirmLabel: 'Delete Account',
-            confirmColor: '#991b1b',
-            onCancel: () => overlay.remove(),
-            onConfirm: (cBtn) => {
-              cBtn.disabled = true;
-              cBtn.textContent = 'Deleting...';
-              accStatus.textContent = 'Removing payment methods...';
-
-              // Step 1: Delete payment methods (skip if fails)
-              gqlMutate('deleteAllPaymentMethods', DELETE_PAYMENT_METHODS_MUTATION,
-                { input: { userId: user.id } },
-                (pmData, pmErr) => {
-                  // Step 2: Disable email
-                  accStatus.textContent = 'Disabling account email...';
-                  const [localPart, domain] = user.email.split('@');
-                  const rand = Math.floor(Math.random() * 900000000) + 100000000;
-                  const disabledEmail = localPart + '_disabled' + rand + '@' + domain;
-
-                  gqlMutate('userChangeEmail', CHANGE_EMAIL_MUTATION,
-                    { input: { userId: user.id, email: disabledEmail } },
-                    (emailData, emailErr) => {
-                      const respErr = emailData?.userChangeEmail?.error;
-                      const errMsg = emailErr || respErr?.message;
-                      if (errMsg) {
-                        accStatus.style.color = 'var(--sb-danger)';
-                        accStatus.textContent = '\u2718 ' + errMsg;
-                        cBtn.disabled = false;
-                        cBtn.textContent = 'Delete Account';
-                        return;
-                      }
-                      accStatus.style.color = 'var(--sb-success-soft)';
-                      accStatus.textContent = '\u2714 Account deleted.';
-                      cBtn.textContent = '\u2714 Done';
-                      delAccBtn.disabled = true;
-                      delAccBtn.textContent = '\u2714 Account Deleted';
-                      delAccBtn.style.color = 'var(--sb-success-soft)';
-                      delAccBtn.style.borderColor = 'var(--sb-success-soft)';
-                      delAccBtn.style.cursor = 'default';
-                      mutPostComment(user.id, 'Account deleted', () => {});
-                      autoClose(() => overlay.remove());
-                    }
-                  );
-                }
-              );
-            },
-          }));
-        };
-        panel.appendChild(delAccBtn);
-
-        // ── Fraud Blocklist Toggle ────────────────────────────────────────
-        const fraudBtn = document.createElement('button');
-        fraudBtn.textContent = '🚫 Blocklist (Fraud)';
-        fraudBtn.style.cssText = `width:100%;padding:9px;border-radius:6px;border:1px solid #7c3aed;background:transparent;
-          color:#c4b5fd;font-weight:600;font-size:var(--sb-fs-12);cursor:pointer;box-sizing:border-box;margin-top:6px;`;
-        fraudBtn.onmouseenter = () => fraudBtn.style.background = 'rgba(124,58,237,0.1)';
-        fraudBtn.onmouseleave = () => fraudBtn.style.background = 'transparent';
-
-        // Use cached fraud status from initial user details query
-        const cachedFraudStatus = cachedCustomerCtx?._fraudStatus || 'DEFAULT';
-        fraudBtn._currentStatus = cachedFraudStatus;
-        if (cachedFraudStatus === 'DECLINE') {
-          fraudBtn.textContent = '✔ Blocklisted (Fraud)';
-          fraudBtn.style.color = 'var(--sb-danger-strong)';
-          fraudBtn.style.borderColor = 'var(--sb-danger-strong)';
-        }
-
-        fraudBtn.onclick = () => {
-          const newStatus = (fraudBtn._currentStatus === 'DECLINE') ? 'DEFAULT' : 'DECLINE';
-          const isAdding = newStatus === 'DECLINE';
-
-          const { overlay, box } = createModal({
-            id: 'sb-fraud-confirm-dialog',
-            title: isAdding ? '🚫 Confirm Blocklist' : '✅ Remove from Blocklist',
-            width: 360,
-          });
-
-          const intro = document.createElement('div');
-          intro.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-text-muted);margin-bottom:10px;';
-          intro.textContent = isAdding
-            ? `Add ${user.email} to the fraud blocklist?`
-            : `Remove ${user.email} from the fraud blocklist?`;
-          box.appendChild(intro);
-
-          box.appendChild(makeLabel('Comment (optional)'));
-          const ta = document.createElement('textarea');
-          ta.rows = 3;
-          ta.placeholder = isAdding ? 'Reason for blocklisting…' : 'Reason for unblocklisting…';
-          ta.style.cssText = 'width:100%;background:var(--sb-bg-deep);color:var(--sb-text);border:1px solid var(--sb-border);border-radius:5px;padding:6px 8px;font-size:var(--sb-fs-12);box-sizing:border-box;resize:vertical;font-family:Arial,sans-serif;margin-bottom:10px;';
-          box.appendChild(ta);
-
-          const dlgStatus = makeStatusEl();
-          box.appendChild(dlgStatus);
-
-          const btns = makeDialogButtons({
-            confirmLabel: isAdding ? 'Blocklist' : 'Remove',
-            confirmColor: isAdding ? 'var(--sb-danger-border)' : '#059669',
-            onCancel: () => overlay.remove(),
-            onConfirm: (confirmBtn, cancelBtn) => {
-              confirmBtn.disabled = true; cancelBtn.disabled = true;
-              confirmBtn.textContent = isAdding ? 'Blocklisting…' : 'Removing…';
-              dlgStatus.style.color = 'var(--sb-text-muted)';
-              dlgStatus.textContent = '';
-
-              gqlMutate('userSetFraudStatus', SET_FRAUD_STATUS_MUTATION,
-                { input: { userId: user.id, status: newStatus } },
-                (data, err) => {
-                  const respErr = data?.userSetFraudStatus?.error;
-                  const errMsg = err || respErr?.message;
-                  if (errMsg) {
-                    dlgStatus.style.color = 'var(--sb-danger)';
-                    dlgStatus.textContent = '\u2718 ' + errMsg;
-                    confirmBtn.disabled = false; cancelBtn.disabled = false;
-                    confirmBtn.textContent = isAdding ? 'Blocklist' : 'Remove';
-                    return;
-                  }
-
-                  const base = isAdding ? 'Fraud blocklist applied' : 'Fraud blocklist removed';
-                  const note = ta.value.trim();
-                  const comment = note ? `${base} — ${note}` : base;
-
-                  dlgStatus.textContent = 'Posting comment…';
-                  mutPostComment(user.id, comment, () => {
-                    fraudBtn._currentStatus = newStatus;
-                    if (newStatus === 'DECLINE') {
-                      fraudBtn.textContent = '✔ Blocklisted (Fraud)';
-                      fraudBtn.style.color = 'var(--sb-danger-strong)';
-                      fraudBtn.style.borderColor = 'var(--sb-danger-strong)';
-                    } else {
-                      fraudBtn.textContent = '🚫 Blocklist (Fraud)';
-                      fraudBtn.style.color = '#c4b5fd';
-                      fraudBtn.style.borderColor = '#7c3aed';
-                    }
-                    fraudBtn.disabled = false;
-                    dlgStatus.style.color = 'var(--sb-success-soft)';
-                    dlgStatus.textContent = '✔ Done!';
-                    autoClose(() => overlay.remove());
-                  });
-                }
-              );
-            },
-          });
-          box.appendChild(btns);
-        };
-        panel.appendChild(fraudBtn);
-      });
+          _cancelInfoSection(C);
+          _cancelOrderSection(C);
+          _cancelCancelSection(C);
+          _cancelPmSection(C);
+          _cancelAccSection(C);
+          _cancelFraudSection(C);
+        });
       }
       render();
       panel._refresh = render;
@@ -4009,6 +4827,9 @@
         panel.appendChild(empty);
         return;
       }
+
+      // Refunds are open on the latest billing group regardless of the linked order's
+      // fulfilment status (Ivan, 2026-10-13) — the order-status gate is gone.
 
       result.all.forEach((entry, idx) => {
         const charge = entry.charge;
@@ -4118,23 +4939,20 @@
         const hasCreditsFlag = credits.length > 0 || shippingCredits.length > 0;
         const lineItemsForRefund = invoice?.lineItems || [];
         const linkedOrder = charge?.orders?.[0];
-        const orderStatus = (linkedOrder?.warehouseOrder?.data?.status || linkedOrder?.status || '').toUpperCase();
-        const orderIsNonRefundable = orderStatus && NON_REFUNDABLE_STATUSES.includes(orderStatus);
-        const canRefund = (hasCreditsFlag || lineItemsForRefund.length > 0) && !orderIsNonRefundable;
+        const canRefund = hasCreditsFlag || lineItemsForRefund.length > 0;
         const refBtn = document.createElement('button');
         refBtn.textContent = 'Refund ' + fmtMoney(totalCents, currency);
         refBtn.disabled = !canRefund;
-        refBtn.title = orderIsNonRefundable ? 'Order is already ' + orderStatus : '';
         refBtn.style.cssText = `
           width:100%;padding:7px;border-radius:6px;border:none;margin-top:4px;
           font-weight:700;font-size:var(--sb-fs-12);cursor:${canRefund ? 'pointer' : 'not-allowed'};
-          background:${canRefund ? '#7c3aed' : 'rgba(124,58,237,0.2)'};
-          color:${canRefund ? '#fff' : 'var(--sb-text-dim)'};
+          background:${canRefund ? 'var(--sb-solid-violet)' : 'var(--sb-solid-violet-dim)'};
+          color:${canRefund ? 'var(--sb-on-solid)' : 'var(--sb-text-dim)'};
           box-sizing:border-box;
         `;
         if (canRefund) {
-          refBtn.onmouseenter = () => refBtn.style.background = '#6d28d9';
-          refBtn.onmouseleave = () => refBtn.style.background = '#7c3aed';
+          refBtn.onmouseenter = () => refBtn.style.background = 'var(--sb-solid-violet-hi)';
+          refBtn.onmouseleave = () => refBtn.style.background = 'var(--sb-solid-violet)';
           const linkedStatus = (linkedOrder?.status || '').toUpperCase();
           const orderId = linkedStatus === 'UPGRADED' ? null : (linkedOrder?.id || null);
           refBtn.onclick = () => showRefundConfirmDialog(user, charge, credits, shippingCredits, currency, totalCents, refBtn, block, orderId);
@@ -4172,35 +4990,6 @@
     });
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // MODALS / DIALOGS (using createModal factory)
-  // ══════════════════════════════════════════════════════════════════════════
-
-  // ── Confirm Dialog (generic) ──────────────────────────────────────────────
-
-  function showConfirmDialog({ title, lines, confirmLabel, confirmColor = 'var(--sb-danger-border)', onConfirm }) {
-    const { overlay, box } = createModal({ id: 'sb-confirm-dialog', title, width: 360 });
-
-    lines.forEach(line => {
-      const el = document.createElement('div');
-      el.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-text-muted);margin-bottom:5px;padding:4px 8px;background:var(--sb-bg-input);border-radius:4px;';
-      el.textContent = line;
-      box.appendChild(el);
-    });
-
-    const warn = document.createElement('div');
-    warn.style.cssText = 'font-size:var(--sb-fs-12);color:var(--sb-danger);margin-top:10px;margin-bottom:14px;';
-    warn.textContent = 'This cannot be undone.';
-    box.appendChild(warn);
-
-    const btns = makeDialogButtons({
-      confirmLabel, confirmColor,
-      onCancel: () => overlay.remove(),
-      onConfirm: (confirmBtn) => { overlay.remove(); onConfirm(confirmBtn); },
-    });
-    box.appendChild(btns);
-  }
-
   // ── Cancel Order Dialog ───────────────────────────────────────────────────
 
   const CANCEL_ORDER_REASONS = [
@@ -4210,10 +4999,26 @@
     { value: '__OTHER__',            label: 'Other (custom comment)' },
   ];
 
+  // Exactly what CRM's own Confirm Refund dialog offers (labels and enum values from
+  // its bundle, 2026-10-13). CRM's full reason map has 9 more (Multiple Charges,
+  // Charged While Cancelled / On Hold, Use Customer Credits, Subscription Plan Changed,
+  // Cancelled gift subscription, Digital Genius issue, Premium Upcharges / Add-on,
+  // Out-of-stock item) that its refund dialog doesn't show for a used credit — every
+  // refund here force-refunds used credits, so they're left out.
   const REFUND_REASONS = [
-    { value: 'CUSTOMER_CHANGED_THEIR_MIND',     label: 'Customer changed their mind' },
-    { value: 'UPCHARGE_REFUND',                 label: 'Premium upcharge / add-on refund' },
-    { value: 'BACKORDERED_UNABLE_TO_REPLACE',   label: 'Backordered, unable to replace' },
+    { value: 'APPROVED_REFUND',              label: 'Approved By Manager' },
+    { value: 'THREAT',                       label: 'BBB / Social media / etc threat' },
+    { value: 'CHARGEBACK',                   label: 'Chargeback' },
+    { value: 'CUSTOMER_CHANGED_THEIR_MIND',  label: 'Customer Changed Their Mind' },
+    { value: 'ISSUE_SHIPMENT',               label: 'Damaged/Empty/Missing package (no replacement)' },
+    { value: 'FAMILY_EMERGENCY',             label: 'Family Emergency' },
+    { value: 'FRAUD',                        label: 'Fraud' },
+    { value: 'INCOMPLETE_SHIPMENT',          label: 'Incomplete Shipment' },
+    { value: 'MISSED_SHIPMENT',              label: 'Missed Shipment' },
+    { value: 'MULTIPLE_SUBSCRIBED_ACCOUNTS', label: 'Multiple Subscribed Accounts' },
+    { value: 'PRICE_INCREASE',               label: 'Price Increase' },
+    { value: 'PROMO_ISSUE',                  label: 'Promo Not Applied' },
+    { value: 'UNDELIVERABLE_SHIPMENT',       label: 'Undeliverable / Returned Shipment' },
   ];
 
   function showCancelOrderDialog(order, user, triggerBtn) {
@@ -4303,6 +5108,8 @@
 
   function showRefundConfirmDialog(user, charge, credits, shippingCredits, currency, totalCents, refBtn, parentBlock, orderId) {
     const { overlay, box } = createModal({ id: 'sb-refund-confirm-overlay', title: 'Confirm Refund', width: 300 });
+    const orderFulfilled = chargeRefundBlock(charge).blocked;
+    let cancelledOrder = false;
 
     const invoice = charge?.cashbirdDetails?.invoice;
     const pmMethod = charge?.cashbirdDetails?.paymentMethod?.methodName || 'Unknown';
@@ -4377,7 +5184,7 @@
         chkRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;';
         cancelCandidateChk = document.createElement('input');
         cancelCandidateChk.type = 'checkbox';
-        cancelCandidateChk.style.cssText = 'width:14px;height:14px;flex-shrink:0;cursor:pointer;accent-color:#f59e0b;';
+        cancelCandidateChk.style.cssText = 'width:14px;height:14px;flex-shrink:0;cursor:pointer;accent-color:var(--sb-warning-strong);';
         const chkLabel = document.createElement('span');
         const candidateStatus = (candidate.warehouseOrder?.data?.status || candidate.status || '').toUpperCase() || 'UNKNOWN';
         chkLabel.innerHTML = `Original order was <strong>UPGRADED</strong>. Confirm cancel of order <strong>#${candidate.id}</strong> (${candidateStatus}) to proceed:`;
@@ -4407,10 +5214,10 @@
 
     const btns = makeDialogButtons({
       confirmLabel: 'Refund',
-      confirmColor: '#7c3aed',
+      confirmColor: 'var(--sb-solid-violet)',
       onCancel: () => overlay.remove(),
       onConfirm: (confirmBtn, cancelBtn) => {
-        if (cancelCandidateChk && !cancelCandidateChk.checked) return;
+        if (!orderFulfilled && cancelCandidateChk && !cancelCandidateChk.checked) return;
         confirmBtn.disabled = true;
         cancelBtn.disabled = true;
         reasonSel.disabled = true;
@@ -4442,7 +5249,7 @@
 
             const refDate = new Date(charge.paymentDate);
             const refMonthLabel = refDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-            const commentText = 'Cancelled & Refunded ' + refMonthLabel + ' order';
+            const commentText = (cancelledOrder ? 'Cancelled & Refunded ' : 'Refunded ') + refMonthLabel + ' order';
 
             const afterComment = () => {
               statusEl.style.color = 'var(--sb-success-soft)';
@@ -4489,7 +5296,11 @@
           }
         };
 
-        const effectiveOrderId = orderId || (cancelCandidateChk?.checked ? cancelCandidateId : null);
+        // Refunds no longer wait on fulfilment, so only cancel an order that can still be
+        // cancelled — a shipped/delivered one is refund-only (its cancel would fail and
+        // block the refund).
+        const effectiveOrderId = orderFulfilled ? null : (orderId || (cancelCandidateChk?.checked ? cancelCandidateId : null));
+        cancelledOrder = !!effectiveOrderId;
         if (effectiveOrderId) {
           statusEl.style.color = 'var(--sb-text-muted)';
           statusEl.textContent = 'Cancelling order...';
@@ -4565,8 +5376,8 @@
 
     const billBtn = document.createElement('button');
     billBtn.textContent = '💳 Bill Upcharge';
-    billBtn.style.cssText = 'flex:1;padding:7px;border-radius:6px;border:none;background:var(--sb-warning-strong);color:#000;font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;';
-    billBtn.onmouseenter = () => billBtn.style.background = '#d97706';
+    billBtn.style.cssText = 'flex:1;padding:7px;border-radius:6px;border:none;background:var(--sb-warning-strong);color:var(--sb-on-warning);font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;';
+    billBtn.onmouseenter = () => billBtn.style.background = 'var(--sb-warning-hi)';
     billBtn.onmouseleave = () => billBtn.style.background = 'var(--sb-warning-strong)';
     btnRow.appendChild(billBtn);
 
@@ -4732,7 +5543,7 @@
     searchInput.style.cssText = 'flex:1;padding:7px 10px;border-radius:6px;border:1px solid var(--sb-hover);background:var(--sb-bg-input);color:var(--sb-text);font-size:var(--sb-fs-13);outline:none;box-sizing:border-box;';
     const searchBtn = document.createElement('button');
     searchBtn.textContent = 'Search';
-    searchBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:#4f46e5;color:#fff;font-weight:700;font-size:var(--sb-fs-13);cursor:pointer;';
+    searchBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:none;background:var(--sb-solid-primary);color:var(--sb-on-solid);font-weight:700;font-size:var(--sb-fs-13);cursor:pointer;';
     inputRow.appendChild(searchInput);
     inputRow.appendChild(searchBtn);
     panel.appendChild(inputRow);
@@ -4754,7 +5565,7 @@
           // userId scopes results to the customer's market/currency — without it the
           // backend can return a legacy trading item that has no valid id, which
           // makes replacementSave fail its trading-item lookup (e.g. fragrance cases).
-          variables: { input: { name: q, sections: ['Subscription', 'Extras', 'AddonSubscription'], statuses: ['LIVE', 'OUT_OF_STOCK', 'NOT_AVAILABLE_FOR_NEW_ORDERS'], userId } },
+          variables: { input: { name: q, sections: ['Subscription', 'Extras', 'AddonSubscription', 'Ecommerce'], statuses: ['LIVE', 'OUT_OF_STOCK', 'NOT_AVAILABLE_FOR_NEW_ORDERS'], userId } },
         }),
         onload(res) {
           if (res.status === 401) { handle401(); resultsEl.innerHTML = '<div style="color:var(--sb-danger);">Sign in required.</div>'; return; }
@@ -4785,12 +5596,13 @@
       // Split into sections
       const subProducts = products.filter(p => p.section === 'Subscription' || p.section === 'Extras');
       const sampleProducts = products.filter(p => p.section === 'AddonSubscription');
+      const ecommProducts = products.filter(p => p.section === 'Ecommerce');
 
       const columnsWrap = document.createElement('div');
 
       function renderColumn(title, items, container) {
         const col = document.createElement('div');
-        col.style.cssText = 'flex:1;min-width:0;';
+        col.style.cssText = 'flex:1 1 150px;min-width:0;';
         const hdr = document.createElement('div');
         hdr.style.cssText = 'font-size:var(--sb-fs-10);font-weight:600;color:var(--sb-text-dim);letter-spacing:0.05em;margin-bottom:6px;';
         hdr.textContent = title;
@@ -4798,7 +5610,7 @@
 
         if (!items.length) {
           const empty = document.createElement('div');
-          empty.style.cssText = 'font-size:var(--sb-fs-11);color:#475569;';
+          empty.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-text-dim);';
           empty.textContent = 'No results';
           col.appendChild(empty);
         }
@@ -4829,9 +5641,18 @@
           // Add-on tag for Extras
           if (product.section === 'Extras') {
             const addonBadge = document.createElement('span');
-            addonBadge.style.cssText = 'font-size:var(--sb-fs-9);padding:1px 4px;border-radius:3px;background:rgba(167,139,250,0.15);color:#c4b5fd;border:1px solid rgba(167,139,250,0.3);';
+            addonBadge.style.cssText = 'font-size:var(--sb-fs-9);padding:1px 4px;border-radius:3px;background:var(--sb-tag-plan-bg);color:var(--sb-tag-plan-fg);border:1px solid var(--sb-tag-plan-border);';
             addonBadge.textContent = 'add-on';
             tagsRow.appendChild(addonBadge);
+          }
+
+          // Size badge for ecomm — full-size bottles vary per SKU, unlike the
+          // fixed 0.27oz / 1.5ml of the other sections.
+          if (product.section === 'Ecommerce' && product.volume) {
+            const sizeBadge = document.createElement('span');
+            sizeBadge.style.cssText = 'font-size:var(--sb-fs-9);padding:1px 4px;border-radius:3px;background:rgba(96,165,250,0.15);color:var(--sb-info);border:1px solid rgba(96,165,250,0.3);';
+            sizeBadge.textContent = product.volumeUnit === 'oz' ? product.volume.toFixed(2) + 'oz' : product.volume + (product.volumeUnit || '');
+            tagsRow.appendChild(sizeBadge);
           }
 
           // Upcharge badge
@@ -4860,7 +5681,7 @@
           const addBtn = document.createElement('button');
           addBtn.textContent = '＋';
           addBtn.title = 'Add to replacement';
-          addBtn.style.cssText = 'padding:3px 8px;border-radius:4px;border:1px solid #6366f1;background:transparent;color:var(--sb-accent);font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;flex-shrink:0;';
+          addBtn.style.cssText = 'padding:3px 8px;border-radius:4px;border:1px solid var(--sb-solid-primary-lo);background:transparent;color:var(--sb-accent);font-weight:700;font-size:var(--sb-fs-12);cursor:pointer;flex-shrink:0;';
           addBtn.onmouseenter = () => addBtn.style.background = 'rgba(99,102,241,0.15)';
           addBtn.onmouseleave = () => addBtn.style.background = 'transparent';
           addBtn.onclick = () => {
@@ -4879,7 +5700,7 @@
             chk.addEventListener('change', () => { if (onItemAdded) onItemAdded(); });
 
             const row = document.createElement('div');
-            row.style.cssText = 'margin-bottom:6px;border-left:2px solid #6366f1;padding-left:6px;';
+            row.style.cssText = 'margin-bottom:6px;border-left:2px solid var(--sb-solid-primary-lo);padding-left:6px;';
             const lbl = document.createElement('label');
             lbl.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--sb-fs-12);color:var(--sb-accent);flex-wrap:wrap;';
             lbl.appendChild(chk);
@@ -4915,14 +5736,13 @@
         container.appendChild(col);
       }
 
-      if (sampleProducts.length) {
-        columnsWrap.style.cssText = 'display:flex;gap:8px;';
-        renderColumn('SUBSCRIPTION (0.27oz)', subProducts, columnsWrap);
-        renderColumn('SAMPLES (1.5ml)', sampleProducts, columnsWrap);
-      } else {
-        columnsWrap.style.cssText = '';
-        renderColumn('SUBSCRIPTION (0.27oz)', subProducts, columnsWrap);
-      }
+      // Subscription column always shows (even empty); the others only when they
+      // have hits, so a plain subscription search keeps its full-width layout.
+      const columns = [{ title: 'SUBSCRIPTION (0.27oz)', items: subProducts }];
+      if (sampleProducts.length) columns.push({ title: 'SAMPLES (1.5ml)', items: sampleProducts });
+      if (ecommProducts.length) columns.push({ title: 'ECOMM (full size)', items: ecommProducts });
+      columnsWrap.style.cssText = columns.length > 1 ? 'display:flex;flex-wrap:wrap;gap:8px;' : '';
+      columns.forEach(({ title, items }) => renderColumn(title, items, columnsWrap));
       resultsEl.appendChild(columnsWrap);
     }
 
@@ -4933,40 +5753,10 @@
     setTimeout(() => searchInput.focus(), 50);
   }
 
-  function showReplacementForm(order, user, totalOrders) {
-    const existingForm = document.getElementById('sb-replacement-form');
-    if (existingForm) { existingForm.remove(); document.getElementById('sb-product-search-panel')?.remove(); return; }
-
-    const isEcomm = order.type && order.type !== 'SUBSCRIPTION' && order.type !== 'MANUAL';
-    const monthLabel = order.month
-      ? new Date(order.year, order.month - 1).toLocaleString('en-US', { month:'short', year:'numeric' })
-      : 'Order';
-
-    const form = createPanel({
-      id: 'sb-replacement-form',
-      title: '\uD83D\uDD04 Replacement — ' + monthLabel,
-      width: 400,
-      maxHeight: 720,
-      centered: true,
-      draggable: true,
-      onClose: () => document.getElementById('sb-product-search-panel')?.remove(),
-    });
-
-    // Reason
-    form.appendChild(makeLabel('REASON'));
-    const reasonSel = makeSelect(REPLACEMENT_REASONS, 'DAMAGED_VIAL');
-    form.appendChild(reasonSel);
-
-    // BOM
-    const availableBoms = isEcomm
-      ? REPLACEMENT_BOMS
-      : REPLACEMENT_BOMS.filter(b => b.value !== 'ECOMMERCE');
-    const defaultBom = isEcomm ? 'ECOMMERCE_MALE'
-      : (totalOrders <= 1 ? 'FEMALE_FIRST_MONTH_SET' : 'FEMALE_RECURRENT_MONTH_SET');
-    form.appendChild(makeLabel('ORDER TYPE (BOM)'));
-    const bomSel = makeSelect(availableBoms, defaultBom);
-    form.appendChild(bomSel);
-
+  /** The "items to replace" checkbox list. Returns the wrapper and the check
+   *  array, which the confirm handler and the upcharge manager both read —
+   *  itemChecks entries are the { chk, item } pairs, not raw elements. */
+  function _replacementItemRows(form, order, onToggle) {
     // Items
     form.appendChild(makeLabel('ITEMS TO REPLACE'));
     const itemsWrap = document.createElement('div');
@@ -4981,8 +5771,8 @@
       const stockStatus = item?.product?.status;
       const stockBadge = {
         'OUT_OF_STOCK':              { text: 'Out of Stock',    color: 'var(--sb-danger-strong)' },
-        'NOT_AVAILABLE_FOR_NEW_ORDERS': { text: 'Not Available', color: '#f97316' },
-        'INTERNAL_USE':              { text: 'Internal Use',    color: '#eab308' },
+        'NOT_AVAILABLE_FOR_NEW_ORDERS': { text: 'Not Available', color: 'var(--sb-plaque-orange)' },
+        'INTERNAL_USE':              { text: 'Internal Use',    color: 'var(--sb-plaque-yellow)' },
       }[stockStatus];
 
       const row = document.createElement('div');
@@ -5020,9 +5810,48 @@
 
       itemsWrap.appendChild(row);
       itemChecks.push({ item, chk, starterChk });
-      chk.addEventListener('change', () => { if (typeof upchargeUI !== 'undefined') upchargeUI.refresh(); });
+      chk.addEventListener('change', () => onToggle && onToggle());
     });
     form.appendChild(itemsWrap);
+    return { itemsWrap, itemChecks };
+  }
+
+  function showReplacementForm(order, user, totalOrders) {
+    const existingForm = document.getElementById('sb-replacement-form');
+    if (existingForm) { existingForm.remove(); document.getElementById('sb-product-search-panel')?.remove(); return; }
+
+    const isEcomm = order.type && order.type !== 'SUBSCRIPTION' && order.type !== 'MANUAL';
+    const monthLabel = order.month
+      ? new Date(order.year, order.month - 1).toLocaleString('en-US', { month:'short', year:'numeric' })
+      : 'Order';
+
+    const form = createPanel({
+      id: 'sb-replacement-form',
+      title: '\uD83D\uDD04 Replacement — ' + monthLabel,
+      width: 400,
+      maxHeight: 720,
+      centered: true,
+      draggable: true,
+      onClose: () => document.getElementById('sb-product-search-panel')?.remove(),
+    });
+
+    // Reason
+    form.appendChild(makeLabel('REASON'));
+    const reasonSel = makeSelect(REPLACEMENT_REASONS, 'DAMAGED_VIAL');
+    form.appendChild(reasonSel);
+
+    // BOM
+    const availableBoms = isEcomm
+      ? REPLACEMENT_BOMS
+      : REPLACEMENT_BOMS.filter(b => b.value !== 'ECOMMERCE');
+    const defaultBom = isEcomm ? 'ECOMMERCE_MALE'
+      : (totalOrders <= 1 ? 'FEMALE_FIRST_MONTH_SET' : 'FEMALE_RECURRENT_MONTH_SET');
+    form.appendChild(makeLabel('ORDER TYPE (BOM)'));
+    const bomSel = makeSelect(availableBoms, defaultBom);
+    form.appendChild(bomSel);
+
+    // Items
+    const { itemsWrap, itemChecks } = _replacementItemRows(form, order, () => upchargeUI.refresh());
 
     // Product search button
     const searchRow = document.createElement('div');
@@ -5094,11 +5923,11 @@
     confirmBtn.textContent = 'Confirm Replacement';
     confirmBtn.style.cssText = `
       margin-top:14px;width:100%;padding:9px;border-radius:6px;
-      border:none;background:#6366f1;color:#fff;font-weight:700;
+      border:none;background:var(--sb-solid-primary-lo);color:var(--sb-on-solid);font-weight:700;
       font-size:var(--sb-fs-13);cursor:pointer;box-sizing:border-box;
     `;
-    confirmBtn.onmouseenter = () => confirmBtn.style.background = '#4f46e5';
-    confirmBtn.onmouseleave = () => confirmBtn.style.background = '#6366f1';
+    confirmBtn.onmouseenter = () => confirmBtn.style.background = 'var(--sb-solid-primary)';
+    confirmBtn.onmouseleave = () => confirmBtn.style.background = 'var(--sb-solid-primary-lo)';
 
     // Upcharge manager (inserted before confirm button)
     const upchargeUI = createUpchargeManager(user.id, itemChecks, confirmBtn);
@@ -5126,13 +5955,14 @@
 
       const variables = {
         input: {
-          zendesk: window.location.href,
+          kustomer: window.location.href,
           reason: reasonSel.value,
           bom: bomSel.value,
           customerId: user.id,
           addressConfirmed: addressChk.checked,
           picturesProvided: picturesChk.checked,
           orderNumber: order.orderNumber,
+          oneTimeCourtesy: false,
           sourceOrder: {
             id: order.id,
             orderItems: selectedItems.map(i => ({
@@ -5202,7 +6032,7 @@
             const postComment = () => {
               statusEl.textContent = 'Posting comment...';
               gqlMutate('createUserComment', CREATE_COMMENT_MUTATION,
-                { input: { userId: user.id, comment: commentText, zendeskUrl: window.location.href } },
+                { input: { userId: user.id, comment: commentText, kustomerUrl: window.location.href } },
                 (data, err) => {
                   if (err) {
                     statusEl.style.color = 'var(--sb-warning-strong)';
@@ -5276,6 +6106,86 @@
     return touched;
   }
 
+  /** Core name-fill for a Kustomer customer: resolve the CRM name (or case the
+   *  existing Kustomer name), then PATCH it. Returns { changed, label, color }
+   *  describing the outcome; throws only on a hard Kustomer GET/PATCH error.
+   *  `emailHint` lets a background caller (e.g. CCPA) skip the URL/cache email
+   *  lookup. When `nudge` is true (the customer is the one on screen), also nudges
+   *  Kustomer's UI to reflect the rename without a reload. Extracted so both the
+   *  Fill Name toolbar button and the CCPA flow share one implementation. */
+  // Two different guards, previously conflated into one — which is what made
+  // "Scentbird User" block the fill it was supposed to trigger.
+  //
+  // PROTECTED: names on the KUSTOMER record we must never overwrite, whatever CRM says.
+  // "DO NOT MERGE OR REPLY" is a deliberate agent flag on specific tickets; renaming it
+  // defeats its whole purpose.
+  const PROTECTED_KUSTOMER_NAMES = new Set(['do not merge or reply']);
+  function isProtectedKustomerName(n) {
+    return PROTECTED_KUSTOMER_NAMES.has(String(n || '').trim().toLowerCase());
+  }
+
+  // PLACEHOLDER: names never worth WRITING INTO Kustomer. CRM stores "Scentbird User"
+  // on accounts with no real name on file, so filling it in replaces whatever Kustomer
+  // had with a value that identifies nobody. It belongs on the value we're about to
+  // write, not on the value we found — a Kustomer record already reading "Scentbird
+  // User" is the single best candidate for a fill, and guarding it here skipped exactly
+  // the tickets that needed the button.
+  const PLACEHOLDER_NAMES = new Set(['scentbird user']);
+  function isPlaceholderName(n) {
+    return PLACEHOLDER_NAMES.has(String(n || '').trim().toLowerCase());
+  }
+
+  async function fillKustomerName(kustomerId, emailHint, nudge) {
+    // Round-trip the full attribute block: PATCH is full-replace on the editable subset.
+    const attrs = await kustomerGetCustomer(kustomerId);
+
+    // Bail before any CRM lookup if the current name is protected — never overwrite it.
+    if (isProtectedKustomerName((attrs.name || '').trim())) {
+      return { changed: false, label: '⏭ Protected name', color: 'var(--sb-text-muted)' };
+    }
+
+    const user = await new Promise(async (resolve) => {
+      if (!emailHint && cachedCustomerCtx?.user) return resolve(cachedCustomerCtx.user);
+      if (emailHint && cachedCustomerCtx?.user && cachedCustomerCtx.email === emailHint) return resolve(cachedCustomerCtx.user);
+      const email = emailHint || await resolveEmail();
+      if (!email) return resolve(null);
+      searchCRM(email, (users, err) => {
+        if (err || !users?.length) return resolve(null);
+        const sbUsers = users.filter(u => !u.origin || u.origin === 'SCENTBIRD');
+        const exactMatch = sbUsers.find(u => u.email?.toLowerCase() === email.toLowerCase());
+        if (exactMatch) cachedCustomerCtx = { email, user: exactMatch, _kustomerId: kustomerId };
+        resolve(exactMatch || null);
+      });
+    });
+
+    const rawCrmName = user ? toProperCase([user.firstName, user.lastName].filter(Boolean).join(' ')) : null;
+    // A placeholder is not a name: treat it as if CRM held nothing, so the casing
+    // fallback below can still improve whatever Kustomer has.
+    const crmName = isPlaceholderName(rawCrmName) ? null : rawCrmName;
+    const currentName = (attrs.name || '').trim();
+
+    let newName, label, color;
+    if (crmName) {
+      newName = crmName;                   label = '✔ Done';   color = 'var(--sb-success-soft)';
+    } else if (currentName && !isPlaceholderName(currentName)) {
+      newName = toProperCase(currentName); label = '✔ Cased';  color = 'var(--sb-warning)';
+    } else if (rawCrmName) {
+      // CRM resolved, but only to the placeholder — and Kustomer has nothing better.
+      return { changed: false, label: '⏭ No real name on file', color: 'var(--sb-text-muted)' };
+    } else if (!getAccessToken() || _reauthRequired) {
+      return { changed: false, label: '⚠ Sign in with Okta', color: 'var(--sb-danger)' };
+    } else {
+      return { changed: false, label: '✘ Not Found', color: 'var(--sb-danger)' };
+    }
+
+    if (newName === attrs.name) return { changed: false, label: '✔ Already set', color: 'var(--sb-text-muted)' };
+
+    attrs.name = newName;
+    await kustomerPatchCustomer(kustomerId, attrs);
+    if (nudge) { try { nudgeKustomerName(currentName, newName); } catch (_) {} }
+    return { changed: true, label, color };
+  }
+
   function registerFillName() {
     if (fillNameRegistered) return;
     fillNameRegistered = true;
@@ -5292,52 +6202,524 @@
       const kustomerId = getCustomerIdFromURL();
       if (!kustomerId) return finish('✘ No customer', 'var(--sb-danger)');
 
-      // Round-trip the full attribute block: PATCH is full-replace on the editable subset.
-      let attrs;
-      try { attrs = await kustomerGetCustomer(kustomerId); }
-      catch (e) { return finish('✘ ' + e.message, 'var(--sb-danger)'); }
-
-      // Resolve customer from CRM if not cached
-      const startId = kustomerId;
-      const getUser = () => new Promise(async (resolve) => {
-        if (cachedCustomerCtx?.user) return resolve(cachedCustomerCtx.user);
-        const email = await resolveEmail();
-        if (getCustomerIdFromURL() !== startId) return resolve(null);
-        if (!email) return resolve(null);
-        searchCRM(email, (users, err) => {
-          if (getCustomerIdFromURL() !== startId) return resolve(null);
-          if (err || !users?.length) return resolve(null);
-          const sbUsers = users.filter(u => !u.origin || u.origin === 'SCENTBIRD');
-          const exactMatch = sbUsers.find(u => u.email?.toLowerCase() === email.toLowerCase());
-          if (exactMatch) cachedCustomerCtx = { email, user: exactMatch, _kustomerId: startId };
-          resolve(exactMatch || null);
-        });
-      });
-
-      const user = await getUser();
-      const crmName = user ? toProperCase([user.firstName, user.lastName].filter(Boolean).join(' ')) : null;
-      const currentName = (attrs.name || '').trim();
-
-      let newName, label, color;
-      if (crmName) {
-        newName = crmName;             label = '✔ Done';   color = 'var(--sb-success-soft)';
-      } else if (currentName) {
-        newName = toProperCase(currentName); label = '✔ Cased'; color = 'var(--sb-warning)';
-      } else if (!getAccessToken() || _reauthRequired) {
-        return finish('⚠ Sign in with Okta', 'var(--sb-danger)');
-      } else {
-        return finish('✘ Not Found', 'var(--sb-danger)');
+      try {
+        const { label, color } = await fillKustomerName(kustomerId, null, true);
+        finish(label, color);
+      } catch (e) {
+        finish('✘ ' + e.message, 'var(--sb-danger)');
       }
-
-      if (newName === attrs.name) return finish('✔ Already set', 'var(--sb-text-muted)');
-
-      attrs.name = newName;
-      try { await kustomerPatchCustomer(kustomerId, attrs); }
-      catch (e) { return finish('✘ ' + e.message, 'var(--sb-danger)'); }
-
-      try { nudgeKustomerName(currentName, newName); } catch (_) {}
-      finish(label, color);
     });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CCPA — one-click privacy-request handler
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** Resolve the exact Scentbird CRM user for an email (Promise wrapper over searchCRM). */
+  function resolveScentbirdUser(email) {
+    return new Promise((resolve) => {
+      searchCRM(email, (users, err) => {
+        if (err || !users?.length) return resolve(null);
+        const sbUsers = users.filter(u => !u.origin || u.origin === 'SCENTBIRD');
+        resolve(sbUsers.find(u => u.email?.toLowerCase() === email.toLowerCase()) || null);
+      });
+    });
+  }
+
+  /** Kustomer deep link for a conversation. */
+  function kustomerTicketUrl(customerId, conversationId) {
+    return `https://scentbird.kustomerapp.com/app/customers/${customerId}/event/${conversationId}`;
+  }
+
+  /** Post a note on the ORIGINATING ticket pointing at the ticket CCPA just created.
+   *  The mirror of the ticketLink note: that one carries the source ticket into the new
+   *  conversation, this one carries the new conversation back to the source, so the
+   *  privacy request and the ticket it came from are linked in both directions.
+   *  Best-effort by design — the CCPA work is already done by the time it runs. */
+  async function postNewTicketBacklink(originCustomerId, originConversationId, newCustomerId, newConversationId) {
+    if (!originCustomerId || !originConversationId) return null;
+    return postConversationNote(
+      originCustomerId,
+      originConversationId,
+      kustomerTicketUrl(newCustomerId, newConversationId),
+      'CCPA ticket created:',
+    );
+  }
+
+  /** The CCPA sequence itself, shared by the toolbar button and the automatic
+   *  info@scentbird.com trigger. Creates a Kustomer customer + conversation, fills its
+   *  name from CRM, cancels a live subscription, cross-links the originating ticket,
+   *  prefills the cancellation reply from the macro shortcut and sets the conversation
+   *  categories. `onStatus` receives a short label per step so callers can attribute a
+   *  mid-sequence failure. Throws on hard failure — callers must not navigate then.
+   *  Returns { cid, convId, url, cancelled }. */
+  async function runCcpaFlow({ email, ticketLink, originCustomerId, originConversationId, onStatus }) {
+    const status = (m) => { try { onStatus?.(m); } catch (_) {} };
+
+    status('Creating…');
+    const cid = await kustomerCreateCustomer(email);
+
+    status('Conversation…');
+    const convId = await kustomerCreateConversation(cid);
+
+    status('Name…');
+    try { await fillKustomerName(cid, email, false); }
+    catch (e) { console.warn('[BirdsEye] CCPA fill name failed', e); }
+
+    status('Cancel sub…');
+    const user = await resolveScentbirdUser(email);
+    // Cancel whenever there's a live (cancellable) subscription — Active, Unpaid
+    // or OnHold. Cancelled/absent subs and missing CRM accounts are skipped.
+    const subs = user?.subscriptionList || [];
+    const hasCancellableSub = CANCELLABLE_SUB_STATUSES.includes(user?.subscription?.status)
+      || subs.some(s => CANCELLABLE_SUB_STATUSES.includes(s.status));
+    if (hasCancellableSub) {
+      await executeCancelSubscription(user, (msg) => status(msg));
+    }
+
+    // Unsubscribe from emails — part of deletion. The mutation is keyed by email, so it
+    // runs for the CRM account's address when there is one, else the requester's. A
+    // failure is logged, not thrown: the customer and ticket already exist by now, and
+    // aborting here would strand the run half-done; the agent sees it in the console
+    // and can use Cancel Sub → Unsubscribe from Emails.
+    status('Unsubscribe…');
+    let unsubscribed = false;
+    try { await crmUnsubscribeEmail(user?.email || email); unsubscribed = true; }
+    catch (e) { console.warn('[BirdsEye] Account deletion: email unsubscribe failed', e); }
+
+    if (ticketLink) {
+      status('Note…');
+      await postConversationNote(cid, convId, ticketLink);
+    }
+
+    // Back-link onto the ticket this request came from. Best-effort: the privacy
+    // request is already handled, and a failed cross-reference must not read as a
+    // failed CCPA run or strand the agent away from the new ticket.
+    if (originCustomerId && originConversationId) {
+      status('Back-link…');
+      try { await postNewTicketBacklink(originCustomerId, originConversationId, cid, convId); }
+      catch (e) { console.warn('[BirdsEye] CCPA back-link note failed', e); }
+    }
+
+    // Two different replies. With a CRM account we confirm a cancellation; without
+    // one there is nothing to confirm — the request can't be actioned until the
+    // customer tells us which account they mean, which is what CCPA-loc asks. That
+    // case is common now, so it gets its own macro rather than a wrong one.
+    const located = !!user;
+    const shortcutId = located ? getCcpaShortcutId() : getCcpaLocShortcutId();
+    if (shortcutId) {
+      status('Reply…');
+      await prefillReply(cid, convId, shortcutId, user);
+      status('Macro…');
+      // Both paths get the conversation macro. These tickets are closed as part of the
+      // flow, and Kustomer wants a categorised conversation when that happens — the
+      // categories are bookkeeping for the close, not a claim about what was done, so
+      // skipping them on the locator path just leaves closed tickets uncategorised.
+      await applyCcpaConversationMacro(convId, shortcutId);
+    } else {
+      console.warn(`[BirdsEye] CCPA: no ${located ? 'cancellation' : 'CCPA-loc'} macro shortcut configured — skipping reply/categories`);
+    }
+
+    // Close the request this came from. The privacy tooling files it, we action it on
+    // a ticket of our own, and it has nothing left to say — but it is the ORIGIN
+    // ticket, so this runs last and never fails the flow: the customer-facing work is
+    // already done by now and the agent is about to be navigated away.
+    if (originConversationId) {
+      status('Closing origin…');
+      try { await closeCcpaOriginTicket(originConversationId); }
+      catch (e) { console.warn('[BirdsEye] CCPA: could not close the originating ticket', e); }
+    }
+
+    return { cid, convId, url: kustomerTicketUrl(cid, convId), cancelled: hasCancellableSub, unsubscribed, located };
+  }
+
+  /** Specials ▾ — the rarely-used one-shot actions, out of the main toolbar row. */
+  function registerSpecialsMenu() {
+    // No module-level guard: addToolbarMenu dedupes by id, and a guard that isn't reset
+    // on toolbar teardown is exactly what once made CCPA vanish after a rebuild.
+    const menu = addToolbarMenu('sb-specials-menu', '★ Specials');
+    if (!menu) return;
+    addOvertimeItem(menu);
+    addMenuItem(menu, 'sb-ccpa-btn', '🗂 Account Deletion Ticket', () => showAccountDeletionDialog());
+  }
+
+  /** Account Deletion Ticket (formerly the CCPA button + the AI panel's CCPA card).
+   *  On an info@scentbird.com privacy hand-off the requester is read off the ticket and
+   *  the dialog is a plain confirm; anywhere else the email is typed in. Either way
+   *  the open ticket is the origin: it gets the back-link note and is closed at the end.
+   *  Run is arm-then-fire — the sequence creates a Kustomer customer and cancels a live
+   *  subscription. On success it lands the agent on the new ticket; on any hard error it
+   *  stays put. Runs are recorded per origin ticket (GM storage, survives the navigation)
+   *  so a second run warns — a re-run creates a duplicate customer. */
+  async function showAccountDeletionDialog() {
+    const originCustomerId = getCustomerIdFromURL();
+    const originConversationId = getConversationIdFromURL();
+    const { overlay, box } = createModal({ id: 'sb-ccpa-input', title: '🗂 Account Deletion Ticket', width: 360 });
+    const info = el('div', { style: 'font-size:var(--sb-fs-12);color:var(--sb-text-muted);margin-bottom:10px;line-height:1.5;', text: 'Checking ticket…' });
+    box.appendChild(info);
+
+    let handoff = null;
+    try { handoff = await detectCcpaHandoff(originConversationId); } catch (_) {}
+    if (!document.body.contains(overlay)) return;
+    const parsed = handoff?.parsed || null;
+
+    const warn = (html) => box.appendChild(el('div', { cls: 'sb-note sb-note--warn', html, style: 'margin-bottom:8px;' }));
+    if (originConversationId && ccpaDoneList().includes(originConversationId)) {
+      warn('<b>⚠ Already run from this ticket.</b> Running again creates a second Kustomer customer and conversation.');
+    }
+    if (!getCcpaShortcutId()) warn('<b>⚠ No macro shortcut configured</b> — reply and categories will be skipped (Settings).');
+    const signedOut = !getAccessToken() || _reauthRequired;
+    if (signedOut) warn('<b>⚠ Not signed in to CRM</b> — sign in with Okta first.');
+
+    // Read off the request → just confirm. Otherwise ask for the requester.
+    let emailIn = null, linkIn = null;
+    if (parsed) {
+      info.innerHTML = '';
+      info.append('Create an account deletion ticket for ',
+        el('b', { style: 'color:var(--sb-text);', text: parsed.email }),
+        '? This request ticket gets linked and closed.');
+    } else {
+      info.textContent = handoff
+        ? `Filed by ${CCPA_SOURCE_EMAIL}, but no “Email:” line was found — enter the requester.`
+        : 'Enter the requester. This ticket gets linked and closed when the run finishes.';
+      const mkField = (labelText, ph) => {
+        box.appendChild(makeLabel(labelText));
+        const i = el('input', { cls: 'sb-input', attrs: { type: 'text', placeholder: ph, spellcheck: 'false' }, style: 'width:100%;box-sizing:border-box;margin-bottom:12px;' });
+        box.appendChild(i);
+        return i;
+      };
+      emailIn = mkField('Customer email', 'customer@example.com');
+      linkIn  = mkField('Ticket link (posted as a note — optional)', 'https://…');
+    }
+
+    const status = makeStatusEl();
+    const say = (m, c) => { status.style.color = c || ''; status.textContent = m; };
+    const cancelBtn = el('button', { cls: 'sb-btn sb-btn--ghost', text: 'Cancel', on: { click: () => overlay.remove() } });
+    const runBtn = el('button', { cls: 'sb-btn sb-btn--danger' });
+    runBtn.disabled = signedOut;
+    box.appendChild(el('div', { cls: 'sb-row', style: 'justify-content:flex-end;gap:6px;margin-top:4px;' }, [cancelBtn, runBtn]));
+    box.appendChild(status);
+    const inputs = [emailIn, linkIn].filter(Boolean);
+
+    const run = async () => {
+      const email = parsed ? parsed.email : emailIn.value.trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return say('✘ Bad email', 'var(--sb-danger)');
+      const ticketLink = parsed ? kustomerTicketUrl(originCustomerId, originConversationId) : linkIn.value.trim();
+      runBtn.disabled = true; cancelBtn.disabled = true; inputs.forEach(i => { i.disabled = true; });
+      // Marked before the sequence starts: it navigates away on success, and a crash
+      // part-way must not read as "never ran" — the customer may already exist.
+      if (originConversationId) markCcpaDone(originConversationId);
+      try {
+        const { url, unsubscribed } = await runCcpaFlow({ email, ticketLink, originCustomerId, originConversationId, onStatus: (m) => say('⏳ ' + m) });
+        if (!unsubscribed) {
+          // Everything else is done; don't navigate past the one step that wasn't.
+          say('⚠ Ticket created, but the email unsubscribe failed — do it from Cancel Sub.', 'var(--sb-warning-strong)');
+          cancelBtn.disabled = false; cancelBtn.textContent = 'Close';
+          runBtn.replaceWith(el('button', { cls: 'sb-btn sb-btn--primary', text: 'Open ticket', on: { click: () => { location.href = url; } } }));
+          return;
+        }
+        say('✔ Ticket created — opening it…', 'var(--sb-success-soft)');
+        location.href = url;
+      } catch (e) {
+        console.warn('[BirdsEye] Account deletion failed', e);
+        say('✘ ' + (e.message || 'failed'), 'var(--sb-danger)');
+        runBtn.disabled = false; cancelBtn.disabled = false; inputs.forEach(i => { i.disabled = false; });
+        runBtn.textContent = 'Retry';
+      }
+    };
+
+    if (parsed) {
+      // The prompt itself is the confirmation — one click runs.
+      runBtn.textContent = 'Create ticket';
+      runBtn.addEventListener('click', run);
+      setTimeout(() => runBtn.focus(), 30);
+    } else {
+      // Typed in by hand: keep arm-then-fire so a stray Enter can't run it.
+      armedButton(runBtn, { idle: 'Run', armed: '⚠ Click again to run', onFire: run });
+      inputs.forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') runBtn.click(); }));
+      setTimeout(() => emailIn.focus(), 30);
+    }
+  }
+
+  // ── Overtime mode ─────────────────────────────────────────────────────────
+  // One click stamps the open ticket as overtime work: an internal note
+  // "OT - DD_MM_YYYY" and a tag OT_ASSIGNED_DD_MM (local date). The tag is dated, so
+  // a new one is needed every day — Kustomer's tag picker handles that by PATCHing
+  // the conversation's tag list with the new tag's *name* in place of an id, which
+  // creates it on the fly. An existing tag must go by id, so look it up first.
+
+  function _otDateParts(d = new Date()) {
+    const p = (n) => String(n).padStart(2, '0');
+    return { dd: p(d.getDate()), mm: p(d.getMonth() + 1), yyyy: String(d.getFullYear()) };
+  }
+
+  /** Id of the tag named exactly `name` (case-insensitive), or null if none exists. */
+  async function kustomerFindTagId(name) {
+    const reqId = _aiUuid();
+    const res = await fetch(
+      `${KUSTOMER_API_BASE}/v1/search/platform/tags?pageSize=100&page=1&client-request-id=${reqId}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { ..._aiHeaders(), 'x-kustomer-client-request-id': reqId },
+        body: JSON.stringify({ and: [{ tag_name: { contains: name } }], queryContext: 'tag', includeDeleted: false }),
+      },
+    );
+    if (!res.ok) throw new Error('Kustomer tag search ' + res.status);
+    const want = name.toLowerCase();
+    const hit = ((await res.json())?.data || []).find(t => (t.attributes?.name || '').toLowerCase() === want);
+    return hit?.id || null;
+  }
+
+  /** Add a tag (by name) to a conversation. Returns false if it was already there. */
+  async function kustomerAddConversationTag(conversationId, name) {
+    const res = await fetch(`${KUSTOMER_API_BASE}/v1/conversations/${conversationId}`, { credentials: 'include', headers: _aiHeaders() });
+    if (!res.ok) throw new Error('Kustomer conversation GET ' + res.status);
+    const current = (await res.json())?.data?.attributes?.tags || [];
+    const id = await kustomerFindTagId(name);
+    if (id && current.includes(id)) return false;
+    await patchConversation(conversationId, { tags: [...current, id || name] });
+    return true;
+  }
+
+  /** Post a plain-text internal note (one DraftJS block per line). Same create → fill →
+   *  send sequence as postConversationNote. `body` is Kustomer's markdown, so markdown
+   *  punctuation is escaped the way the composer does it ('OT - x' goes out as 'OT \- x'). */
+  async function postPlainNote(customerId, conversationId, text) {
+    const body = text.replace(/[\\`*_[\]#+\-!>~|]/g, '\\$&');
+    const blocks = text.split('\n').map(line => ({ key: _draftBlockKey(), text: line, type: 'unstyled', depth: 0, inlineStyleRanges: [], entityRanges: [], data: {} }));
+    const draftId = await kustomerCreateDraft(customerId, 'note', conversationId);
+    await kustomerUpdateDraft(draftId, {
+      body,
+      channel: 'note',
+      payload: { draftJs: { blocks, entityMap: {} } },
+    });
+    await kustomerUpdateDraft(draftId, {
+      body,
+      channel: 'note',
+      userMentions: [],
+      conversation: conversationId,
+      sendAt: new Date().toISOString(),
+    });
+    return draftId;
+  }
+
+  function addOvertimeItem(menu) {
+    const created = addMenuItem(menu, 'sb-ot-btn', '🕒 OT', async (btn) => {
+      const orig = btn.textContent;
+      const finish = (label, color) => {
+        btn.textContent = label;
+        btn.style.color = color || '';
+        setTimeout(() => { btn.textContent = orig; btn.style.color = ''; btn.disabled = false; }, 2500);
+      };
+
+      const customerId = getCustomerIdFromURL();
+      const conversationId = getConversationIdFromURL();
+      if (!customerId || !conversationId) return finish('✘ No ticket', 'var(--sb-danger)');
+
+      const { dd, mm, yyyy } = _otDateParts();
+      btn.disabled = true;
+      btn.textContent = '⏳';
+      try {
+        // Tag first: if today's tag is already on the ticket, OT was already stamped —
+        // skip the note rather than post a duplicate.
+        const added = await kustomerAddConversationTag(conversationId, `OT_ASSIGNED_${dd}_${mm}`);
+        if (!added) return finish('✔ Already OT', 'var(--sb-warning)');
+        await postPlainNote(customerId, conversationId, `OT - ${dd}_${mm}_${yyyy}`);
+        finish('✔ OT', 'var(--sb-success)');
+      } catch (e) {
+        console.warn('[BirdsEye] OT failed', e);
+        finish('✘ ' + (e.message || 'failed'), 'var(--sb-danger)');
+      }
+    });
+    if (created) created.title = 'Overtime: note "OT - DD_MM_YYYY" + tag OT_ASSIGNED_DD_MM';
+  }
+
+  // ── Snooze note ───────────────────────────────────────────────────────────
+  // Two entry points, one form: "What are you waiting on?" → internal note
+  // "Waiting on <thing>".
+  //
+  // 1. Kustomer's snooze button (svg[data-icon=clock-snooze]) opens a popover of
+  //    options. Once one is picked and the popover closes, the form goes up and the
+  //    note posts. Escape / click-away (nothing picked) shows nothing.
+  // 2. The composer's ⋯ menu "Send & snooze 1 day" ([data-kt=popoverMenuItem-snooze])
+  //    is held before it acts (it fires on press — every pointer phase is swallowed on
+  //    window, capture, ahead of React). "Post & send" then does the whole job through
+  //    the API, in this order: send the reply (sendConversationReply, the same path as
+  //    the AI panel's Send + Pending), snooze 1 day, post the note — so the note lands
+  //    after the message. Kustomer's own auto-advance doesn't run; the ticket stays open.
+  //
+  // Ticket ids are captured when the action starts, so moving on can't post the note
+  // onto the next ticket.
+  const SNOOZE_POPOVER_SEL = '[class*="snoozePopoverKomponent__popover"]';
+  const SEND_SNOOZE_SEL = '[data-kt="popoverMenuItem-snooze"]';
+  const SEND_SNOOZE_MS = 24 * 60 * 60 * 1000;
+  const WAITING_ON = ['images', 'address confirmation', 'fragrance confirmation'];
+  let _snoozePick = null;   // { customerId, conversationId } once a popover option is clicked
+
+  document.addEventListener('click', (e) => {
+    const pop = e.target.closest?.(SNOOZE_POPOVER_SEL);
+    if (!pop || e.target.closest('[class*="snoozePopoverKomponent__header"]')) return;
+    const customerId = getCustomerIdFromURL(), conversationId = getConversationIdFromURL();
+    if (!customerId || !conversationId || _snoozePick) return;
+    _snoozePick = { customerId, conversationId };
+    const deadline = Date.now() + 120000;   // Pick Date & Time can take a while
+    const wait = setInterval(() => {
+      if (document.querySelector(SNOOZE_POPOVER_SEL) && Date.now() < deadline) return;
+      clearInterval(wait);
+      const pick = _snoozePick; _snoozePick = null;
+      if (Date.now() < deadline) showWaitingOnPrompt(pick);
+    }, 300);
+  }, true);
+
+  ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => window.addEventListener(type, (e) => {
+    if (!e.isTrusted || !e.target.closest?.(SEND_SNOOZE_SEL)) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (type !== 'pointerdown' || document.getElementById('sb-snooze-note')) return;
+    const customerId = getCustomerIdFromURL(), conversationId = getConversationIdFromURL();
+    if (customerId && conversationId) showWaitingOnPrompt({ customerId, conversationId }, { sendFirst: true });
+  }, true));
+
+  /** "Waiting on …" form. `sendFirst`: send the composer reply and snooze 1 day before
+   *  the note (Send & snooze); otherwise just post the note (after a native snooze). */
+  function showWaitingOnPrompt({ customerId, conversationId }, { sendFirst = false } = {}) {
+    const id = 'sb-snooze-note';
+    const panel = createPanel({ id, title: sendFirst ? '💤 Send & snooze 1 day' : '💤 Snooze note', width: 340, centered: true, draggable: true });
+
+    panel.appendChild(makeLabel('WHAT ARE YOU WAITING ON?'));
+    const sel = el('select', { cls: 'sb-select', style: 'width:100%;box-sizing:border-box;' });
+    [...WAITING_ON, 'other'].forEach(v => sel.appendChild(el('option', {
+      text: v === 'other' ? 'Other (specify)' : v[0].toUpperCase() + v.slice(1), attrs: { value: v } })));
+    const other = el('input', { cls: 'sb-input', attrs: { placeholder: 'Waiting on…' },
+      style: 'display:none;width:100%;box-sizing:border-box;margin-top:6px;' });
+    sel.addEventListener('change', () => { other.style.display = sel.value === 'other' ? '' : 'none'; if (sel.value === 'other') other.focus(); });
+    const status = makeStatusEl();
+    const cancel = el('button', { cls: 'sb-btn sb-btn--ghost', text: sendFirst ? 'Cancel' : 'Skip', on: { click: () => removePanel(id) } });
+    const go = el('button', { cls: 'sb-btn sb-btn--primary', text: sendFirst ? 'Post & send' : 'Post note' });
+
+    const noteText = () => {
+      const what = sel.value === 'other' ? other.value.trim() : sel.value;
+      return what ? 'Waiting on ' + what : '';
+    };
+    const say = (msg, color) => { status.style.color = color || ''; status.textContent = msg; };
+
+    let sent = false, snoozed = false;
+    const run = async () => {
+      const text = noteText();
+      if (!text) { say('✘ Say what you are waiting on', 'var(--sb-danger)'); other.focus(); return; }
+      go.disabled = true; cancel.disabled = true; sel.disabled = true; other.disabled = true;
+      go.textContent = '⏳';
+      try {
+        if (sendFirst && !sent) {
+          const r = await sendConversationReply({ customerId, conversationId, onStatus: (m) => say(m) });
+          sent = true;
+          clearComposerAfterSend({ conversationId, draftId: r.draftId, sentText: r.composerText }).catch(() => {});
+        }
+        if (sendFirst && !snoozed) {
+          say('Snoozing 1 day…');
+          await patchConversation(conversationId, {
+            status: 'snoozed',
+            snooze: { time: new Date(Date.now() + SEND_SNOOZE_MS).toISOString(), status: 'scheduled' },
+          });
+          snoozed = true;
+        }
+        say('Posting note…');
+        await postPlainNote(customerId, conversationId, text);
+        removePanel(id);
+      } catch (err) {
+        console.warn('[BirdsEye] waiting-on flow failed', err);
+        // A retry resumes from the failed step — never re-sends a reply that went out.
+        const where = !sendFirst ? '' : !sent ? 'Not sent: ' : !snoozed ? 'Sent, snooze failed: ' : 'Sent & snoozed, note failed: ';
+        say('✘ ' + where + (err.message || 'failed'), 'var(--sb-danger)');
+        go.disabled = false; sel.disabled = false; other.disabled = false;
+        cancel.disabled = false;
+        if (sent) cancel.textContent = 'Close';
+        go.textContent = sent ? 'Retry' : (sendFirst ? 'Post & send' : 'Post note');
+      }
+    };
+    go.addEventListener('click', run);
+    panel.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.target === other)) { e.preventDefault(); if (!go.disabled) run(); }
+      if (e.key === 'Escape' && !cancel.disabled) removePanel(id);
+    });
+
+    panel.appendChild(sel);
+    panel.appendChild(other);
+    panel.appendChild(el('div', { cls: 'sb-row', style: 'justify-content:flex-end;gap:6px;margin-top:10px;' }, [cancel, go]));
+    panel.appendChild(status);
+    setTimeout(() => sel.focus(), 0);
+  }
+
+  // ── CCPA hand-offs from info@scentbird.com ────────────────────────────────
+  // The privacy tooling files these as a ticket from info@scentbird.com whose first
+  // message carries the requester's identifiers:
+  //     Requested by: User in Web App
+  //     Email: ssjahna@gmail.com
+  //     User ID: 12714325
+  // Those tickets are always the same job, so the whole sequence can be automated —
+  // but it is NOT automatic. It used to fire unattended off the MutationObserver the
+  // moment an agent opened one of these tickets, which meant a customer was created
+  // and a subscription cancelled with no one having pressed anything. The detection
+  // now lives in the AI panel (see _aiRenderCcpaAction): the panel recognises the
+  // ticket type and offers the automation as the flow, the agent approves it.
+  //
+  // Conversations that have been run are still recorded in GM storage: the flow
+  // navigates away to the ticket it just created, so an in-memory mark would be lost
+  // exactly when it matters, and a re-run creates a duplicate customer. The record is
+  // advisory now rather than a silent skip — the panel warns and lets the agent decide.
+
+  const CCPA_SOURCE_EMAIL = 'info@scentbird.com';
+  const CCPA_DONE_KEY = 'birdseye_ccpa_auto_done';
+  const CCPA_DONE_MAX = 200;
+
+  function ccpaDoneList() {
+    try { const v = JSON.parse(GM_getValue(CCPA_DONE_KEY, '[]')); return Array.isArray(v) ? v : []; }
+    catch (_) { return []; }
+  }
+  function markCcpaDone(conversationId) {
+    const list = ccpaDoneList().filter(id => id !== conversationId);
+    list.push(conversationId);
+    try { GM_setValue(CCPA_DONE_KEY, JSON.stringify(list.slice(-CCPA_DONE_MAX))); } catch (_) {}
+  }
+
+  /** Pull the requester's email (and user id, when present) out of a hand-off message.
+   *  Returns null when the message isn't one — the caller then leaves the ticket alone. */
+  function parseCcpaRequestMessage(raw) {
+    const text = String(raw || '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(?:p|div|tr|li)>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&');
+    const email = (text.match(/Email:\s*([^\s<>()[\],;:]+@[^\s<>()[\],;:]+)/i) || [])[1];
+    if (!email) return null;
+    const userId = (text.match(/User\s*ID:\s*(\d+)/i) || [])[1] || null;
+    return { email: email.trim().toLowerCase(), userId };
+  }
+
+  /** Is the open ticket a privacy-tooling CCPA hand-off? Detection only — nothing
+   *  runs off the back of this, the AI panel renders it as an approvable flow.
+   *  Returns null when the ticket isn't from info@scentbird.com at all; otherwise
+   *  `{ parsed }`, where `parsed` is null for a hand-off whose messages carry no
+   *  "Email:" line (the panel then sends the agent to the manual button). */
+  async function detectCcpaHandoff(conversationId) {
+    if (!conversationId) return null;
+
+    let email = null;
+    try { email = await resolveEmail(); } catch (_) { return null; }
+    if (email !== CCPA_SOURCE_EMAIL) return null;
+
+    let parsed = null;
+    try {
+      const messages = await kustomerGetConversationMessagesRaw(conversationId, 10);
+      for (const m of messages) {
+        parsed = parseCcpaRequestMessage(m.body || m.preview);
+        if (parsed) break;
+      }
+    } catch (e) {
+      console.warn('[BirdsEye] CCPA: could not read messages', e);
+    }
+    return { parsed };
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -5441,7 +6823,9 @@
       needsCharges: true,
       resolve({ charges }) {
         if (!charges?.length) return null;
-        const successEntries = charges.filter(e => e.success);
+        // Raw chargeList entries ({ date, kind, charge }) — there is no `success` flag
+        // on them, which is why this used to filter everything out and never fill.
+        const successEntries = charges.filter(e => e.charge?.status === 'SUCCESS');
         if (!successEntries.length) return null;
         return successEntries.map(e => buildBillExplanation(e)).filter(Boolean).join('\n\n') || null;
       },
@@ -5452,28 +6836,86 @@
     return document.querySelector('.public-DraftEditor-content[contenteditable="true"]');
   }
 
+  // Draft.js splits the composer's text across <span data-offset-key> nodes, and it
+  // splits exactly where inline styling or a link begins — so a macro that wraps a token
+  // in a link serializes as "[TRACK</span><span…>ING]". Substituting over raw innerHTML
+  // therefore misses the token while innerText still shows it as present, which is how a
+  // literal [TRACKING] ended up pasted into DNR replies while the plain-sentence macros
+  // (cant-ref-shipped) filled fine. Match against the text NODES instead, edit them on a
+  // detached clone, and leave behind a contiguous sentinel: it survives serialization in
+  // one piece, so the (possibly HTML) value can be spliced in afterwards.
+  const _FILL_SENTINEL = (i) => `⟦BEFILL${i}⟧`;
+
+  /** Fill every [TOKEN] in `rootEl`, tolerating tokens split across element boundaries.
+   *  Returns { html, count } — count is how many distinct tokens matched — or null when
+   *  nothing matched at all. Does not mutate `rootEl`. */
+  function _fillTokensInHtml(rootEl, replacements) {
+    const root = rootEl.cloneNode(true);
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    let full = '';
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      // `len` is captured up front: the edits below change node text, and every offset
+      // here is in ORIGINAL coordinates.
+      nodes.push({ node: n, start: full.length, len: n.nodeValue.length });
+      full += n.nodeValue;
+    }
+    if (!nodes.length) return null;
+
+    const hits = [];
+    replacements.forEach((r, i) => {
+      const token = '[' + r.key + ']';
+      for (let at = full.indexOf(token); at !== -1; at = full.indexOf(token, at + token.length)) {
+        hits.push({ at, end: at + token.length, i });
+      }
+    });
+    if (!hits.length) return null;
+
+    // Queue edits per node, then apply each node's edits right-to-left so the
+    // still-unapplied original coordinates stay valid.
+    const edits = new Map();
+    for (const h of hits) {
+      let isFirstNode = true;
+      for (const nd of nodes) {
+        const nStart = nd.start, nEnd = nd.start + nd.len;
+        if (nEnd <= h.at || nStart >= h.end) continue;
+        const list = edits.get(nd.node) || [];
+        list.push({
+          from:   Math.max(h.at, nStart) - nStart,
+          to:     Math.min(h.end, nEnd) - nStart,
+          // The sentinel goes in the node holding the token's START; the tail nodes
+          // just lose their slice of it.
+          insert: isFirstNode ? _FILL_SENTINEL(h.i) : '',
+        });
+        edits.set(nd.node, list);
+        isFirstNode = false;
+      }
+    }
+    for (const [node, list] of edits) {
+      list.sort((a, b) => b.from - a.from);
+      let v = node.nodeValue;
+      for (const e of list) v = v.slice(0, e.from) + e.insert + v.slice(e.to);
+      node.nodeValue = v;
+    }
+
+    let html = root.innerHTML;
+    replacements.forEach((r, i) => {
+      const str = (r.value && typeof r.value === 'object') ? r.value.text : String(r.value);
+      const htmlVal = str.split('\n').map((line, k) =>
+        k === 0 ? line : '<div>' + (line || '<br>') + '</div>'
+      ).join('');
+      html = html.split(_FILL_SENTINEL(i)).join(htmlVal);
+    });
+    return { html, count: new Set(hits.map(h => h.i)).size };
+  }
+
   function fillComposer(replacements) {
     const composer = getComposer();
     if (!composer) return 0;
-
-    let html = composer.innerHTML;
-    let count = 0;
-
-    replacements.forEach(({ key, value }) => {
-      const token = '[' + key + ']';
-      const str = (value && typeof value === 'object') ? value.text : value;
-      if (html.includes(token)) {
-        const htmlStr = str.split('\n').map((line, i) =>
-          i === 0 ? line : '<div>' + (line || '<br>') + '</div>'
-        ).join('');
-        html = html.split(token).join(htmlStr);
-        count++;
-      }
-    });
-
-    if (count === 0) return 0;
-    GM_setClipboard(html, 'html');
-    return count;
+    const res = _fillTokensInHtml(composer, replacements);
+    if (!res) return 0;
+    GM_setClipboard(res.html, 'html');
+    return res.count;
   }
 
   // Fill "pick an order" state: set while the ✏️ Fill button waits for the agent
@@ -5547,6 +6989,32 @@
     enterFillPick(needed, btn);
   }
 
+  // Tokens whose values come off the subscription record rather than the order.
+  const SUBSCRIPTION_FILL_KEYS = ['BD', 'BD-1', 'DATE_SUBSCRIBED', 'DATE_CANCELLED'];
+
+  /** Fresh subscription for the date tokens. Always refetched, never read off
+   *  cachedCustomerCtx: the cached user predates whatever CRM op the flow just ran
+   *  (a cancellation sets subscriptionEndDate, which [DATE_CANCELLED] needs), and the
+   *  lean user.subscription from CRM_QUERY carries no billing or end dates at all.
+   *  Prefers the active sub, else the newest entry. Resolves null on any failure. */
+  function fetchFillSubscription(userId) {
+    return new Promise((resolve) => {
+      if (!userId) return resolve(null);
+      crmRequest({
+        method: 'POST', url: GRAPHQL_URL,
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ operationName: 'userDetailsById', query: USER_DETAILS_QUERY, variables: { id: userId } }),
+        onload(res) {
+          try {
+            const list = JSON.parse(res.responseText)?.data?.userById?.data?.subscriptionList || [];
+            resolve(list.find(s => s.status === 'Active' || s.subscribed) || list[0] || null);
+          } catch (e) { resolve(null); }
+        },
+        onerror() { resolve(null); },
+      });
+    });
+  }
+
   function doFill(btn, needed, pickedOrder) {
     const orig = btn.textContent;
     btn.textContent = '⏳'; btn.disabled = true;
@@ -5556,7 +7024,7 @@
     };
 
     const needsOrder        = needed.some(v => ['MONTH','DATE','FRAGRANCE','TRACKING'].includes(v.key));
-    const needsSubscription = needed.some(v => ['BD','BD-1','DATE_SUBSCRIBED','DATE_CANCELLED'].includes(v.key));
+    const needsSubscription = needed.some(v => SUBSCRIPTION_FILL_KEYS.includes(v.key));
     const needsCharges      = needed.some(v => v.needsCharges);
 
     loadCustomer(btn, (result) => {
@@ -5580,7 +7048,9 @@
 
           if (needsCharges) {
             loadCustomerCharges(user.id, (chargeResult) => {
-              afterCharges(chargeResult?.entries || []);
+              // fetchCharges hands back { success, all, failed } — never `entries`.
+              // `all` is the recent successful cluster, as the Charges panel reads it.
+              afterCharges(chargeResult?.all || (chargeResult?.success ? [chargeResult.success] : []));
             });
           } else {
             afterCharges(null);
@@ -5588,20 +7058,7 @@
         };
 
         if (needsSubscription) {
-          crmRequest({
-            method: 'POST', url: GRAPHQL_URL,
-            headers: { 'Content-Type': 'application/json' },
-            data: JSON.stringify({ operationName: 'userDetailsById', query: USER_DETAILS_QUERY, variables: { id: user.id } }),
-            onload(res) {
-              try {
-                const json = JSON.parse(res.responseText);
-                const list = json?.data?.userById?.data?.subscriptionList || [];
-                const active = list.find(s => s.status === 'Active' || s.subscribed) || list[0] || null;
-                afterSubscription(active);
-              } catch(e) { afterSubscription(null); }
-            },
-            onerror() { afterSubscription(null); },
-          });
+          fetchFillSubscription(user.id).then(afterSubscription);
         } else {
           afterSubscription(null);
         }
@@ -5622,118 +7079,6 @@
         afterOrders(null);
       }
     });
-  }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // SLASH AUTOCOMPLETE (disabled — buggy in Draft.js composer)
-  // ══════════════════════════════════════════════════════════════════════════
-
-  let _slashPicker = null;
-
-  function removeSlashPicker() {
-    _slashPicker?.remove();
-    _slashPicker = null;
-  }
-
-  function showSlashPicker(composer, caretRect, filter) {
-    removeSlashPicker();
-
-    const matches = FILL_VARIABLES.filter(v =>
-      filter === '' || v.key.toLowerCase().startsWith(filter.toLowerCase()) || v.label.toLowerCase().startsWith(filter.toLowerCase())
-    );
-    if (!matches.length) return;
-
-    const picker = document.createElement('div');
-    _slashPicker = picker;
-    picker.style.cssText = `
-      all:initial;position:fixed;z-index:9999999;
-      background:var(--sb-bg-panel);border:1px solid var(--sb-hover);border-radius:7px;
-      box-shadow:0 8px 24px rgba(0,0,0,0.5);overflow:hidden;
-      font-family:Arial,sans-serif;font-size:var(--sb-fs-12);min-width:200px;
-    `;
-    picker.style.left = caretRect.left + 'px';
-    picker.style.top  = (caretRect.bottom + 4) + 'px';
-
-    let selected = 0;
-
-    const rows = matches.map((v, i) => {
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:6px 12px;cursor:pointer;gap:16px;';
-      row.innerHTML = `<span style="color:var(--sb-text);font-weight:600;">[${v.key}]</span><span style="color:var(--sb-text-dim);font-size:var(--sb-fs-11);">${v.label}</span>`;
-      row.addEventListener('mouseenter', () => { selected = i; highlight(); });
-      row.addEventListener('mousedown', (e) => { e.preventDefault(); insertVariable(v.key); });
-      return row;
-    });
-
-    function highlight() {
-      rows.forEach((r, i) => r.style.background = i === selected ? 'rgba(99,102,241,0.25)' : '');
-    }
-    rows.forEach(r => picker.appendChild(r));
-    highlight();
-    document.body.appendChild(picker);
-
-    const keyHandler = (e) => {
-      if (!_slashPicker) return;
-      if (e.key === 'ArrowDown') { e.preventDefault(); selected = (selected + 1) % rows.length; highlight(); }
-      else if (e.key === 'ArrowUp') { e.preventDefault(); selected = (selected - 1 + rows.length) % rows.length; highlight(); }
-      else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insertVariable(matches[selected].key); }
-      else if (e.key === 'Escape') { removeSlashPicker(); }
-    };
-    document.addEventListener('keydown', keyHandler, true);
-    picker._keyHandler = keyHandler;
-
-    function insertVariable(key) {
-      removeSlashPicker();
-      document.removeEventListener('keydown', keyHandler, true);
-      const sel = window.getSelection();
-      if (sel?.rangeCount) {
-        const range = sel.getRangeAt(0);
-        const textNode = range.startContainer;
-        if (textNode.nodeType === Node.TEXT_NODE) {
-          const text = textNode.nodeValue;
-          const slashIdx = text.lastIndexOf('/', range.startOffset);
-          if (slashIdx !== -1) {
-            const deleteRange = document.createRange();
-            deleteRange.setStart(textNode, slashIdx);
-            deleteRange.setEnd(textNode, range.startOffset);
-            deleteRange.deleteContents();
-            sel.collapseToStart();
-          }
-        }
-      }
-      document.execCommand('insertText', false, '[' + key + ']');
-      composer.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-  }
-
-  function initSlashAutocomplete() {
-    document.addEventListener('input', (e) => {
-      const composer = getComposer();
-      if (!composer || !composer.contains(e.target)) { removeSlashPicker(); return; }
-
-      const sel = window.getSelection();
-      if (!sel?.rangeCount) return;
-      const range = sel.getRangeAt(0);
-      const textNode = range.startContainer;
-      if (textNode.nodeType !== Node.TEXT_NODE) return;
-
-      const textBefore = textNode.nodeValue.slice(0, range.startOffset);
-      const slashIdx = textBefore.lastIndexOf('/');
-      if (slashIdx === -1) { removeSlashPicker(); return; }
-
-      const charBefore = textBefore[slashIdx - 1];
-      if (slashIdx > 0 && charBefore && !/\s/.test(charBefore)) { removeSlashPicker(); return; }
-
-      const filter = textBefore.slice(slashIdx + 1);
-      if (/\s/.test(filter)) { removeSlashPicker(); return; }
-
-      const caretRect = range.getBoundingClientRect();
-      showSlashPicker(composer, caretRect, filter);
-    }, true);
-
-    document.addEventListener('mousedown', (e) => {
-      if (_slashPicker && !_slashPicker.contains(e.target)) removeSlashPicker();
-    }, true);
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -5772,6 +7117,9 @@
     });
     addToolbarButton('sb-edit-customer-btn', '✎ Edit Customer', (btn) => {
       showEditCustomerPanel(btn);
+    });
+    addToolbarButton('sb-downgrade-btn', '⬇ Downgrade', (btn) => {
+      showDowngradePanel(btn);
     });
     addToolbarButton('sb-cancel-btn', '❌ Cancel Sub', (btn) => {
       showCancelPanel(btn);
@@ -5812,18 +7160,8 @@
   // SETTINGS PANEL
   // ══════════════════════════════════════════════════════════════════════════
 
-  function showSettingsPanel() {
-    const panel = createPanel({
-      id: 'sb-settings-panel',
-      title: '⚙ Settings',
-      width: 320,
-      maxHeight: 480,
-      centered: true,
-      noScale: true,
-    });
-
-    const s = getSettings();
-
+  /** Dark/light segmented toggle. */
+  function _settingsThemeSection(panel, s) {
     // ── Theme toggle (segmented) ────────────────────────────────────────────
     const themeLabel = document.createElement('div');
     themeLabel.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-11);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;';
@@ -5856,6 +7194,11 @@
     };
     paintTheme();
 
+  }
+
+  /** Font and modal scale sliders, plus the range-row
+   *  helper they share. */
+  function _settingsScaleSection(panel, s) {
     // ── Range slider helper ─────────────────────────────────────────────────
     const makeRangeRow = (key, label, min, max, step, current, onInput) => {
       const wrap = document.createElement('div');
@@ -5876,7 +7219,7 @@
       range.max   = String(max);
       range.step  = String(step);
       range.value = String(current);
-      range.style.cssText = 'width:100%;accent-color:#6366f1;';
+      range.style.cssText = 'width:100%;accent-color:var(--sb-solid-primary-lo);';
       range.oninput = () => {
         const v = parseFloat(range.value);
         lblVal.textContent = v.toFixed(2) + '×';
@@ -5896,6 +7239,10 @@
       setSettings({ modalScale: v });
     }));
 
+  }
+
+  /** Close-delay and hide-tax toggles. */
+  function _settingsBehaviourSection(panel, s) {
     // ── Close delay toggle ──────────────────────────────────────────────────
     const delayRow = document.createElement('div');
     delayRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;';
@@ -5907,7 +7254,7 @@
       const on = getSettings().closeDelay;
       delayToggle.textContent = on ? 'On' : 'Off';
       delayToggle.style.cssText = `padding:4px 14px;border-radius:20px;border:none;font-size:var(--sb-fs-12);font-weight:700;cursor:pointer;
-        background:${on ? '#6366f1' : 'var(--sb-control-bg)'};color:${on ? '#fff' : 'var(--sb-text-muted)'};`;
+        background:${on ? 'var(--sb-solid-primary-lo)' : 'var(--sb-control-bg)'};color:${on ? 'var(--sb-on-solid)' : 'var(--sb-text-muted)'};`;
     };
     paintDelay();
     delayToggle.onclick = () => { setSettings({ closeDelay: !getSettings().closeDelay }); paintDelay(); };
@@ -5926,7 +7273,7 @@
       const on = getSettings().hideTax;
       taxToggle.textContent = on ? 'On' : 'Off';
       taxToggle.style.cssText = `padding:4px 14px;border-radius:20px;border:none;font-size:var(--sb-fs-12);font-weight:700;cursor:pointer;
-        background:${on ? '#6366f1' : 'var(--sb-control-bg)'};color:${on ? '#fff' : 'var(--sb-text-muted)'};`;
+        background:${on ? 'var(--sb-solid-primary-lo)' : 'var(--sb-control-bg)'};color:${on ? 'var(--sb-on-solid)' : 'var(--sb-text-muted)'};`;
     };
     paintTax();
     taxToggle.onclick = () => { setSettings({ hideTax: !getSettings().hideTax }); paintTax(); };
@@ -5934,6 +7281,56 @@
     taxRow.appendChild(taxToggle);
     panel.appendChild(taxRow);
 
+  }
+
+  /** The two CCPA macro shortcut links. */
+  function _settingsCcpaSection(panel, s) {
+    // ── CCPA macro shortcuts ────────────────────────────────────────────────
+    const ccpaLabel = document.createElement('div');
+    ccpaLabel.style.cssText = 'color:var(--sb-text-muted);font-size:var(--sb-fs-11);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;';
+    ccpaLabel.textContent = 'CCPA macro shortcut links';
+    panel.appendChild(ccpaLabel);
+
+    /** Shortcut-link field with a live "Shortcut id: …" readout. `key` is the
+     *  settings key it writes. `required` decides whether a blank value is an error
+     *  or just an unconfigured optional path. */
+    const addShortcutField = (key, caption, required) => {
+      const cap = document.createElement('div');
+      cap.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-text-dim);margin-bottom:3px;';
+      cap.textContent = caption;
+      panel.appendChild(cap);
+
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.value = s[key] || '';
+      inp.placeholder = 'https://…/settings/shortcuts/<id>/edit';
+      inp.spellcheck = false;
+      inp.style.cssText = 'width:100%;box-sizing:border-box;padding:7px 10px;margin-bottom:4px;border-radius:6px;border:1px solid var(--sb-border);background:var(--sb-bg-input);color:var(--sb-text);font-size:var(--sb-fs-12);';
+      const hint = document.createElement('div');
+      hint.style.cssText = 'font-size:var(--sb-fs-11);color:var(--sb-text-dim);margin-bottom:10px;';
+      const paint = () => {
+        const id = parseShortcutId(inp.value);
+        if (id) { hint.textContent = 'Shortcut id: ' + id; hint.style.color = 'var(--sb-text-dim)'; return; }
+        const blank = !inp.value.trim();
+        hint.textContent = blank && !required ? 'Not configured — this reply will be skipped.' : '⚠ No shortcut id found in link';
+        hint.style.color = blank && !required ? 'var(--sb-text-dim)' : 'var(--sb-danger)';
+      };
+      paint();
+      inp.oninput = () => { setSettings({ [key]: inp.value.trim() }); paint(); };
+      panel.appendChild(inp);
+      panel.appendChild(hint);
+    };
+
+    addShortcutField('ccpaShortcut',    'Cancellation reply (account found)', true);
+    addShortcutField('ccpaLocShortcut', 'CCPA-loc — no CRM account found',    false);
+    const ccpaSpacer = document.createElement('div');
+    ccpaSpacer.style.cssText = 'height:4px;';
+    panel.appendChild(ccpaSpacer);
+
+  }
+
+  /** Entry point to the bill-explanation templates panel. */
+  function _settingsBillSection(panel, s) {
     // ── Bill Explanations ───────────────────────────────────────────────────
     const billBtn = document.createElement('button');
     billBtn.textContent = '✎ Edit Bill Explanations';
@@ -5947,6 +7344,10 @@
     billBtn.onclick = () => showBillTemplatesPanel();
     panel.appendChild(billBtn);
 
+  }
+
+  /** Reset to defaults / Done. */
+  function _settingsFooterSection(panel, s) {
     // ── Reset / Done ────────────────────────────────────────────────────────
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:8px;margin-top:6px;';
@@ -5967,11 +7368,34 @@
 
     const doneBtn = document.createElement('button');
     doneBtn.textContent = 'Done';
-    doneBtn.style.cssText = 'padding:7px 16px;border-radius:6px;border:none;background:#6366f1;color:#fff;font-size:var(--sb-fs-12);font-weight:700;cursor:pointer;';
+    doneBtn.style.cssText = 'padding:7px 16px;border-radius:6px;border:none;background:var(--sb-solid-primary-lo);color:var(--sb-on-solid);font-size:var(--sb-fs-12);font-weight:700;cursor:pointer;';
     doneBtn.onclick = () => removePanel('sb-settings-panel');
     btnRow.appendChild(doneBtn);
 
     panel.appendChild(btnRow);
+  }
+
+  /** Settings panel. Eight independent sections, each reading and writing its own
+   *  slice of getSettings()/setSettings — none of them shares state with another,
+   *  which is what made the 288-line original a pure concatenation. */
+  function showSettingsPanel() {
+    const panel = createPanel({
+      id: 'sb-settings-panel',
+      title: '⚙ Settings',
+      width: 320,
+      maxHeight: 480,
+      centered: true,
+      noScale: true,
+    });
+
+    const s = getSettings();
+
+    _settingsThemeSection(panel, s);
+    _settingsScaleSection(panel, s);
+    _settingsBehaviourSection(panel, s);
+    _settingsCcpaSection(panel, s);
+    _settingsBillSection(panel, s);
+    _settingsFooterSection(panel, s);
   }
 
   function showBillTemplatesPanel() {
@@ -6055,14 +7479,14 @@
 
     const saveBtn = document.createElement('button');
     saveBtn.textContent = 'Save';
-    saveBtn.style.cssText = 'padding:7px 20px;border-radius:6px;border:none;background:#6366f1;color:#fff;font-size:var(--sb-fs-12);font-weight:700;cursor:pointer;';
+    saveBtn.style.cssText = 'padding:7px 20px;border-radius:6px;border:none;background:var(--sb-solid-primary-lo);color:var(--sb-on-solid);font-size:var(--sb-fs-12);font-weight:700;cursor:pointer;';
     saveBtn.onclick = () => {
       const patch = {};
       Object.keys(textareas).forEach(k => { patch[k] = textareas[k].value; });
       GM_setValue(BILL_TEMPLATES_KEY, JSON.stringify(patch));
       saveBtn.textContent = '✔ Saved';
-      saveBtn.style.background = '#059669';
-      setTimeout(() => { saveBtn.textContent = 'Save'; saveBtn.style.background = '#6366f1'; }, 1500);
+      saveBtn.style.background = 'var(--sb-solid-success)';
+      setTimeout(() => { saveBtn.textContent = 'Save'; saveBtn.style.background = 'var(--sb-solid-primary-lo)'; }, 1500);
     };
 
     actionRow.appendChild(resetBtn);
@@ -6093,7 +7517,7 @@
     'TRIMONTHLY_3PCS': 'Trimonthly · 3 fragrances',
   };
 
-  function renderUserInfoBar(sub, addressMatch, orderAddrStr) {
+  function renderUserInfoBar(sub, addressMatch, orderAddrStr, coupons = []) {
     const existing = document.getElementById('sb-user-info-bar');
     if (existing) existing.remove();
 
@@ -6221,6 +7645,29 @@
 
     if (group2.children.length) tagsRow.appendChild(group2);
 
+    // Coupons (every subscription on the account): active ones as green pills, past
+    // ones folded into one dim "+N past" pill. Detail lives in the tooltips.
+    const couponTip = (c) => [c.code, c.type, c.amount != null ? 'amount ' + c.amount : null, c.status,
+      c.applyToNextBillingDates ? 'next ' + c.applyToNextBillingDates + ' billing(s)' : null].filter(Boolean).join(' · ');
+    const isActiveCoupon = (c) => c.status === 'ACTIVE' || c.status === 'NEW';
+    const activeCoupons = coupons.filter(isActiveCoupon);
+    const pastCoupons = coupons.filter(c => !isActiveCoupon(c));
+    if (coupons.length) {
+      const couponGroup = makeGroup();
+      activeCoupons.forEach(c => {
+        const t = makeTag('🏷 ' + (c.code || c.type || 'coupon'), 'var(--sb-success-soft)', 'var(--sb-tag-success-bg)', 'var(--sb-tag-success-border)');
+        t.title = couponTip(c);
+        couponGroup.appendChild(t);
+      });
+      if (pastCoupons.length) {
+        const t = makeTag(activeCoupons.length ? `+${pastCoupons.length} past` : `🏷 ${pastCoupons.length} past coupon${pastCoupons.length === 1 ? '' : 's'}`,
+          'var(--sb-text-dim)', 'var(--sb-tag-muted-bg)', 'var(--sb-tag-muted-border)');
+        t.title = pastCoupons.map(couponTip).join('\n');
+        couponGroup.appendChild(t);
+      }
+      tagsRow.appendChild(couponGroup);
+    }
+
     // Group 3: Location tags (Canada, UK, Hawaii/Alaska/Puerto Rico)
     const shipping = cachedCustomerCtx?.user?.userAddress?.shipping;
     if (shipping) {
@@ -6318,7 +7765,16 @@
           if (!active) return;
 
           if (cachedCustomerCtx) {
-            cachedCustomerCtx._isAwaitCancellation = !!active.cashbirdDetails?.data?.isAwaitCancellation;
+            const awaitCancel = !!active.cashbirdDetails?.data?.isAwaitCancellation;
+            cachedCustomerCtx._isAwaitCancellation = awaitCancel;
+            // When the cancellation actually takes effect, cached here because this is
+            // the only path holding the full subscription — the lean user.subscription
+            // from CRM_QUERY has no billing dates. An await-cancellation sub still reads
+            // Active and ends at the next billing date; an already-Cancelled one carries
+            // subscriptionEndDate. pickCancellationFlow sanity-checks it.
+            cachedCustomerCtx._subCancelDate = awaitCancel
+              ? (active.cashbirdDetails?.data?.nextBillingDate || active.nextBillingDate || null)
+              : (active.subscriptionEndDate || null);
           }
 
           // Fetch last order for address comparison + chargeback check
@@ -6328,7 +7784,7 @@
             const addrMatch = lastSub ? _compareAddresses(user, lastSub) : null;
             const orderAddr = lastSub?.initialShippingAddress;
             const orderAddrStr = orderAddr ? [orderAddr.street1, orderAddr.street2, orderAddr.city, orderAddr.region, orderAddr.postcode].filter(Boolean).join(', ') : '';
-            renderUserInfoBar(active, addrMatch, orderAddrStr);
+            renderUserInfoBar(active, addrMatch, orderAddrStr, subs.flatMap(s => s.coupons || []));
 
             // Async: fraud tag
             if (userData.fraudInfo?.status === 'DECLINE') {
@@ -6422,181 +7878,18 @@
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // MUTATION OBSERVER — wire everything on header appear
-  // ══════════════════════════════════════════════════════════════════════════
-
-  const observer = new MutationObserver(() => {
-    if (toolbarEl && !document.body.contains(toolbarEl)) {
-      toolbarEl = null;
-      fillNameRegistered = false;
-      clearCustomerCtx();
-      ['sb-order-panel','sb-charges-panel','sb-cancel-panel','sb-search-panel','sb-queue-panel','sb-edit-customer-panel'].forEach(id => document.getElementById(id)?.remove());
-    }
-    if (!ensureToolbar()) return;
-    registerFillName();
-    registerCrmButtons();
-    refreshOktaButtonState();
-    refreshUserInfoBar();
-  });
-
-  observer.observe(document.body, { childList: true, subtree: true });
-
-  // ── Stash selection on mousedown (Edge clears it before click fires) ────
-
-  document.addEventListener('mousedown', () => {
-    stashedSelection = (window.getSelection()?.toString() || '').trim();
-  }, true);
-
-  // ── Keyboard shortcut ─────────────────────────────────────────────────────
-
-  document.addEventListener('keydown', (e) => {
-    if (e.ctrlKey && e.shiftKey && e.key === 'Q') {
-      if (document.getElementById('sb-search-panel')) { removePanel('sb-search-panel'); return; }
-      showSearchPanel(window.getSelection().toString().trim());
-    }
-  });
-
-  // ── Customer API auth via hidden iframe ──
-
-  let _customerApiReady = false;
-  let _customerCsrfToken = null;
-
-  function ensureCustomerAuth(callback) {
-    if (_customerApiReady) return callback(true);
-
-    const gwebLink = cachedCustomerCtx?._gwebLink;
-    if (!gwebLink) { console.warn('[BirdsEye] No gwebLink'); return callback(false); }
-
-    const popup = window.open(gwebLink, 'sb_auth', 'width=1,height=1,left=-9999,top=-9999,menubar=no,toolbar=no,location=no,status=no');
-    window.focus();
-
-    setTimeout(() => {
-      try { popup?.close(); } catch(e) {}
-
-      GM_xmlhttpRequest({
-        method: 'POST',
-        url: 'https://api.scentbird.com/graphql?opname=queueProbe',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Origin': 'https://www.scentbird.com',
-          'Referer': 'https://www.scentbird.com/',
-        },
-        data: JSON.stringify({
-          operationName: 'queueProbe',
-          variables: {},
-          query: `query queueProbe { __schema { queryType { fields { name } } } }`
-        }),
-        onload(res) {
-          const csrfMatch = res.responseHeaders.match(/x-csrf-token:\s*(.+)/i);
-          if (csrfMatch) _customerCsrfToken = csrfMatch[1].trim();
-
-          try {
-            const body = JSON.parse(res.responseText);
-            if (body?.data) {
-              _customerApiReady = true;
-              callback(true);
-            } else {
-              callback(false);
-            }
-          } catch(e) {
-            callback(false);
-          }
-        },
-        onerror() {
-          callback(false);
-        }
-      });
-    }, 5000);
-  }
-
-  function customerApiDelete(flatIndex, callback) {
-    const headers = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Origin': 'https://www.scentbird.com',
-      'Referer': 'https://www.scentbird.com/',
-    };
-    if (_customerCsrfToken) headers['x-csrf-token'] = _customerCsrfToken;
-
-    GM_xmlhttpRequest({
-      method: 'POST',
-      url: 'https://api.scentbird.com/graphql?opname=QueueDeleteItem',
-      headers,
-      data: JSON.stringify({
-        operationName: 'QueueDeleteItem',
-        variables: {
-          mutationInput: { index: flatIndex, metadata: { page: 'Queue', pageType: 'Queue', placement: 'queue' } },
-          queueInput: { limit: 24 }
-        },
-        query: `mutation QueueDeleteItem($mutationInput: QueueDeleteItemInput!, $queueInput: QueueInput) {
-          queueDeleteItem(input: $mutationInput) {
-            queue(input: $queueInput) {
-              queueItems { month year products { flatIndex queueItemId tradingItem { productInfo { name } } } }
-            }
-            error {
-              ... on QueueDeleteItemError { queueDeleteItemErrorCode: errorCode message }
-              ... on SecurityError { securityErrorCode: errorCode message }
-              ... on ServerError { serverErrorCode: errorCode message }
-              ... on ValidationError { validationErrorCode: errorCode message }
-            }
-          }
-        }`
-      }),
-      onload(res) {
-        try {
-          const body = JSON.parse(res.responseText);
-          const err = body?.data?.queueDeleteItem?.error;
-          const errMsg = err?.message;
-          if (errMsg) return callback(null, errMsg);
-          if (body?.errors?.length) return callback(null, body.errors[0].message);
-          callback(body?.data?.queueDeleteItem, null);
-        } catch(e) { callback(null, 'Parse error'); }
-      },
-      onerror() { callback(null, 'Network error'); }
-    });
-  }
-
-  /** Generic customer-side API call (api.scentbird.com). Requires ensureCustomerAuth first. */
-  function customerApiCall(operationName, query, variables, callback) {
-    const headers = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Origin': 'https://www.scentbird.com',
-      'Referer': 'https://www.scentbird.com/',
-    };
-    if (_customerCsrfToken) headers['x-csrf-token'] = _customerCsrfToken;
-
-    GM_xmlhttpRequest({
-      method: 'POST',
-      url: 'https://api.scentbird.com/graphql?opname=' + operationName,
-      headers,
-      data: JSON.stringify({ operationName, variables, query }),
-      onload(res) {
-        try {
-          const body = JSON.parse(res.responseText);
-          if (body?.errors?.length) return callback(null, body.errors[0].message);
-          callback(body?.data, null);
-        } catch(e) { callback(null, 'Parse error'); }
-      },
-      onerror() { callback(null, 'Network error'); }
-    });
-  }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // KUSTOMER CUSTOMER API — direct PATCH/merge/search for Fill Name & Apply.
-  // Replaces the old DOM-automation of Kustomer's Edit-Customer modal.
-  // The `_ai` prefix on a few helpers is a vestigial namespace; the functions
-  // are general Kustomer API plumbing.
+  // AI ASSIST — piggybacks on Kustomer's internal Copilot (AIR) endpoint.
+  // No third-party API key: uses the agent's existing Kustomer auth via cookies.
+  // Each analysis creates a fresh thread (server upserts on first POST).
   // ══════════════════════════════════════════════════════════════════════════
 
   const KUSTOMER_API_BASE = 'https://scentbird.api.kustomerapp.com';
 
   // Kustomer attaches a couple of headers to every API call that we can't derive
-  // ourselves: x-csrf-token (NOT the _csrf cookie — a separate session token from
-  // a boot endpoint) and x-kustomer-version (the live client build, which Kustomer
-  // bumps often and rejects stale values of). Sniff outbound fetch/XHR to capture
-  // both from Kustomer's own traffic, then reuse them on our requests.
+  // ourselves: x-csrf-token (NOT the _csrf cookie — a separate token from a boot
+  // endpoint) and x-kustomer-version (the live client build, which Kustomer bumps
+  // often and rejects stale values of). Sniff outbound fetch/XHR to capture both
+  // from Kustomer's own traffic, then reuse them on our requests.
   let _aiCapturedCsrf = null;
   let _aiCapturedVersion = null;
   (function captureKustomerHeaders() {
@@ -6648,9 +7941,12 @@
   }
 
   function _aiCsrf() {
+    // Kustomer stores its live CSRF token in localStorage.csrfToken (the _csrf cookie
+    // is HttpOnly and unreadable). Fall back to the interceptor capture if storage fails.
     try {
       const stored = localStorage.getItem('csrfToken');
       if (stored) {
+        // localStorage sometimes wraps strings in JSON quotes — strip them.
         try {
           const parsed = JSON.parse(stored);
           if (typeof parsed === 'string' && parsed) return parsed;
@@ -6659,15 +7955,6 @@
       }
     } catch(e) {}
     return _aiCapturedCsrf || '';
-  }
-  async function _aiWaitForCsrf(timeoutMs = 5000) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const t = _aiCsrf();
-      if (t) return t;
-      await new Promise(r => setTimeout(r, 200));
-    }
-    return '';
   }
   function _aiUuid() {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -6747,6 +8034,606 @@
     return (await res.json())?.data;
   }
 
+  /** Create a fresh Kustomer customer record holding `email` and nothing else
+   *  (name filled in later by Fill Name). Cookie-authenticated like the rest of the
+   *  kustomer* helpers. On a duplicate-email 409 we reuse the existing record:
+   *  look it up via kustomerSearchByEmail and return its id so the CCPA flow
+   *  continues on it. Returns the customer id string. */
+  async function kustomerCreateCustomer(email) {
+    const reqId = _aiUuid();
+    const res = await fetch(
+      `${KUSTOMER_API_BASE}/v1/customers?client-request-id=${reqId}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { ..._aiHeaders(), 'x-kustomer-client-request-id': reqId },
+        body: JSON.stringify({
+          phones: [], sharedPhones: [], whatsapps: [], sharedWhatsapps: [],
+          emails: [{ type: 'home', email }], sharedEmails: [],
+          socials: [], tiktoks: [], urls: [],
+          locations: [{ type: 'home', address: '', address2: '', cityName: '', countryName: '', regionName: '', zipCode: '' }],
+          externalIds: [],
+          name: null, company: null, externalId: null,
+          defaultLang: null, timeZone: null, dedicatedUser: null, gender: null,
+        }),
+      },
+    );
+    if (res.status === 409) {
+      const list = await kustomerSearchByEmail(email);
+      const existing = (list || [])[0];
+      if (existing?.id) return existing.id;
+      throw new Error('Duplicate email but existing customer not found');
+    }
+    if (!res.ok) {
+      let detail = 'Kustomer create ' + res.status;
+      try {
+        const j = await res.json();
+        if (j?.errors?.[0]?.detail) detail += ': ' + j.errors[0].detail;
+        console.warn('[BirdsEye] Kustomer create error', res.status, j);
+      } catch(_) {}
+      throw new Error(detail);
+    }
+    const id = (await res.json())?.data?.id;
+    if (!id) throw new Error('Kustomer create: no id in response');
+    return id;
+  }
+
+  /** Open an outbound, open-status conversation on a Kustomer customer.
+   *  Returns the conversation id (used to navigate the agent onto it). */
+  async function kustomerCreateConversation(customerId) {
+    const reqId = _aiUuid();
+    const res = await fetch(
+      `${KUSTOMER_API_BASE}/v1/customers/${customerId}/conversations?client-request-id=${reqId}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { ..._aiHeaders(), 'x-kustomer-client-request-id': reqId },
+        body: JSON.stringify({ direction: 'out', status: 'open' }),
+      },
+    );
+    if (!res.ok) {
+      let detail = 'Kustomer conversation ' + res.status;
+      try {
+        const j = await res.json();
+        if (j?.errors?.[0]?.detail) detail += ': ' + j.errors[0].detail;
+        console.warn('[BirdsEye] Kustomer conversation error', res.status, j);
+      } catch(_) {}
+      throw new Error(detail);
+    }
+    const id = (await res.json())?.data?.id;
+    if (!id) throw new Error('Kustomer conversation: no id in response');
+    return id;
+  }
+
+  // ── Drafts / notes / macros ────────────────────────────────────────────────
+  // Kustomer composes every outbound message (reply or note) as a draft: POST to
+  // /v1/customers/{id}/drafts creates an empty draft on a conversation, then a PUT
+  // to /v1/drafts/{draftId} fills it (body, or a shortcut/macro). These helpers are
+  // deliberately granular so the AI layer can reuse them (e.g. prefillReply).
+
+  /** Current signed-in Kustomer agent { id, displayName }. Cached. Used for
+   *  self-assigning conversations and the {{currentUser.displayName}} macro var. */
+  let _kustomerAgent = null;
+  async function kustomerCurrentUser() {
+    if (_kustomerAgent) return _kustomerAgent;
+    const res = await fetch(`${KUSTOMER_API_BASE}/v1/users/current`, {
+      credentials: 'include', headers: _aiHeaders(),
+    });
+    if (!res.ok) throw new Error('Kustomer users/current ' + res.status);
+    const data = (await res.json())?.data;
+    const a = data?.attributes || {};
+    if (!data?.id) throw new Error('Kustomer users/current: no id');
+    _kustomerAgent = { id: data.id, displayName: a.displayName || a.name || a.firstName || '' };
+    return _kustomerAgent;
+  }
+  async function kustomerCurrentUserId() { return (await kustomerCurrentUser()).id; }
+
+  /** Create an empty draft (channel 'note' or 'email') on a conversation. Returns draft id. */
+  async function kustomerCreateDraft(customerId, channel, conversationId) {
+    const reqId = _aiUuid();
+    const res = await fetch(
+      `${KUSTOMER_API_BASE}/v1/customers/${customerId}/drafts?client-request-id=${reqId}`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { ..._aiHeaders(), 'x-kustomer-client-request-id': reqId },
+        body: JSON.stringify({ channel, conversation: conversationId }),
+      },
+    );
+    const raw = await res.text();
+    if (!res.ok) throw new Error('Kustomer draft create ' + res.status + ' ' + raw.slice(0, 200));
+    let json = null; try { json = JSON.parse(raw); } catch (_) {}
+    const id = json?.data?.id;
+    if (!id) throw new Error('Kustomer draft create: no id');
+    return id;
+  }
+
+  /** Update a draft. `sourceShortcutId` attributes the change to a Kustomer shortcut
+   *  (mirrors the UI's x-kustomer-ui-source-* headers when applying a macro). */
+  async function kustomerUpdateDraft(draftId, payload, sourceShortcutId) {
+    const reqId = _aiUuid();
+    const headers = { ..._aiHeaders(), 'x-kustomer-client-request-id': reqId };
+    if (sourceShortcutId) {
+      headers['x-kustomer-ui-source-id'] = sourceShortcutId;
+      headers['x-kustomer-ui-source-type'] = 'shortcut';
+    }
+    const res = await fetch(
+      `${KUSTOMER_API_BASE}/v1/drafts/${draftId}?client-request-id=${reqId}`,
+      { method: 'PUT', credentials: 'include', headers, body: JSON.stringify(payload) },
+    );
+    const raw = await res.text();
+    if (!res.ok) throw new Error('Kustomer draft update ' + res.status + ' ' + raw.slice(0, 200));
+    let json = null; try { json = JSON.parse(raw); } catch (_) {}
+    return json?.data;
+  }
+
+  /** Random 5-char DraftJS block key. */
+  function _draftBlockKey() {
+    let k = '';
+    for (let i = 0; i < 5; i++) k += (Math.random() * 36 | 0).toString(36);
+    return k;
+  }
+
+  /** Note draft body holding a single clickable link. `body` is the plain URL —
+   *  the send PUT drops `payload`, so the posted note renders from `body` alone and
+   *  a markdown mirror would post literally. DraftJS entity carries the link in the
+   *  composer only. */
+  function buildLinkNotePayload(linkUrl, prefix) {
+    const lead = prefix ? prefix + ' ' : '';
+    const text = lead + linkUrl + ' ';
+    return {
+      body: lead + linkUrl,
+      payload: {
+        draftJs: {
+          blocks: [{
+            text,
+            key: _draftBlockKey(),
+            type: 'unstyled',
+            depth: 0,
+            data: {},
+            inlineStyleRanges: [],
+            entityRanges: [{ offset: lead.length, length: linkUrl.length, key: 0 }],
+          }],
+          entityMap: {
+            '0': { type: 'LINK', mutability: 'MUTABLE', data: { href: linkUrl, rel: 'noopener', target: '_blank', url: linkUrl } },
+          },
+        },
+      },
+      channel: 'note',
+    };
+  }
+
+  /** Post an internal note containing a single link onto a conversation.
+   *
+   *  Kustomer has no "send message" endpoint — sending is a *second* PUT to the same
+   *  draft carrying `sendAt`, which flips it to status:'scheduled'. Writing the body
+   *  alone (what we used to do) leaves an unsent draft sitting in the composer.
+   *  Order matters: once scheduled the draft is frozen ('Cannot edit scheduled draft',
+   *  409), so the content PUT has to land first. The send PUT mirrors the web client:
+   *  body + conversation + userMentions, no `payload`. */
+  async function postConversationNote(customerId, conversationId, linkUrl, prefix) {
+    const draftId = await kustomerCreateDraft(customerId, 'note', conversationId);
+    const payload = buildLinkNotePayload(linkUrl, prefix);
+    await kustomerUpdateDraft(draftId, payload);
+    await kustomerUpdateDraft(draftId, {
+      body: payload.body,
+      channel: 'note',
+      userMentions: [],
+      conversation: conversationId,
+      sendAt: new Date().toISOString(),
+    });
+    return draftId;
+  }
+
+  // ── Shortcut (macro) templates ─────────────────────────────────────────────
+  // Kustomer interpolates shortcuts *client-side*, so PUT {shortcuts:[id]} leaves the
+  // draft body empty. We instead fetch the shortcut's own template (draft.text +
+  // payload.text draftJs), interpolate the vars we can, and PUT the filled body
+  // ourselves. Shortcuts rarely change → cache the whole list for the session.
+  let _shortcutCache = null;   // Map(id → attributes)
+  async function kustomerFetchShortcuts() {
+    if (_shortcutCache) return _shortcutCache;
+    const map = new Map();
+    let page = 1;
+    // Hard cap on pages so a schema change can't spin forever.
+    for (let guard = 0; guard < 50; guard++) {
+      const res = await fetch(
+        `${KUSTOMER_API_BASE}/v1/shortcuts?page=${page}&pageSize=100&client-request-id=${_aiUuid()}`,
+        { credentials: 'include', headers: _aiHeaders() },
+      );
+      if (!res.ok) throw new Error('Kustomer shortcuts ' + res.status);
+      const json = await res.json();
+      (json?.data || []).forEach(sc => { if (sc?.id) map.set(sc.id, sc.attributes || {}); });
+      if (!json?.links?.next) break;
+      page++;
+    }
+    _shortcutCache = map;
+    return map;
+  }
+  /** Shortcut attributes by id ({ name, draft:{text}, payload:{text:{blocks,entityMap}} }). */
+  async function kustomerGetShortcut(id) {
+    const map = await kustomerFetchShortcuts();
+    const attrs = map.get(id);
+    if (!attrs) throw new Error('Shortcut not found: ' + id);
+    return attrs;
+  }
+
+  /** The conversation's composer draft — `{ id, attributes }` — or null if none saved
+   *  yet. Kustomer autosaves the live composer into this object, so its `body` and
+   *  `payload.draftJs` are the rich (links, italics) version of what the agent sees. */
+  async function kustomerGetConversationDraft(conversationId) {
+    const res = await fetch(
+      `${KUSTOMER_API_BASE}/v1/conversations/${conversationId}/drafts?client-request-id=${_aiUuid()}`,
+      { credentials: 'include', headers: _aiHeaders() },
+    );
+    if (!res.ok) return null;
+    const d = ((await res.json())?.data || [])[0];
+    return d?.id ? { id: d.id, attributes: d.attributes || {} } : null;
+  }
+
+  /** Existing composer draft id for a conversation, or null if none saved yet. */
+  async function kustomerGetConversationDraftId(conversationId) {
+    return (await kustomerGetConversationDraft(conversationId))?.id || null;
+  }
+
+  // ── Sending an email reply ────────────────────────────────────────────────
+  // Same shape as postConversationNote: there is no send endpoint, a second PUT to
+  // the draft carrying `sendAt` IS the send. Email needs four fields a note doesn't —
+  // from/to/app/template — and none of them live on the draft object; Kustomer's web
+  // client computes them at send time, so we supply them the same way it does.
+  //
+  // `from` is deliberately a constant rather than derived from the inbound message's
+  // recipient: tickets that arrived at the old support@scentbird.mail.kustomerapp.com
+  // mailbox would otherwise reply out of it, and the live client no longer does that.
+  const KUSTOMER_REPLY_FROM = 'support@scentbird.com';
+  const KUSTOMER_REPLY_APP = 'postmark';
+  // Org email template (the branded HTML wrapper). Stable per org; if Scentbird ever
+  // changes it, sends fail loudly and this is the one line to update.
+  const KUSTOMER_REPLY_TEMPLATE = '67ea39f7a280fa09cc90f178';
+
+  /** Who a reply goes to: the address the customer actually wrote in from (newest
+   *  inbound email's `meta.from`), falling back to the Kustomer customer record. */
+  async function resolveReplyRecipient(conversationId) {
+    try {
+      const messages = await kustomerGetConversationMessagesRaw(conversationId, 20);
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const a = messages[i];
+        if (a.direction !== 'in') continue;
+        const from = a.meta?.from || (typeof a.from === 'string' ? a.from : a.from?.email);
+        if (from && /@/.test(from)) return String(from).trim();
+      }
+    } catch (e) {
+      console.warn('[BirdsEye] reply recipient: message scan failed', e);
+    }
+    return await resolveEmail();
+  }
+
+  /** Plain text → draftJs blocks. Only used when the server draft is too stale to
+   *  trust; it flattens links and italics, which is why it isn't the primary path. */
+  function draftJsFromText(text) {
+    return {
+      blocks: String(text || '').split('\n').map(line => ({
+        key: _draftBlockKey(), text: line, type: 'unstyled', depth: 0,
+        data: {}, inlineStyleRanges: [], entityRanges: [],
+      })),
+      entityMap: {},
+    };
+  }
+
+  const _normReplyText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+
+  /** A draft's text as the composer renders it. Reads the draftJs blocks, NOT `body`:
+   *  `body` is a markdown serialization ("future \\- whenever", "*italic*"), so it
+   *  never compares equal to the composer's innerText. Blocks carry the clean text. */
+  function draftPlainText(attributes) {
+    const blocks = attributes?.payload?.draftJs?.blocks;
+    if (Array.isArray(blocks)) return blocks.map(b => b?.text || '').join('\n');
+    return attributes?.body || '';
+  }
+
+  const _sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  /** Poll the conversation's draft until Kustomer has autosaved the composer's current
+   *  text into it. Returns the draft once it matches, or null on timeout — the caller
+   *  then falls back to serializing the composer itself.
+   *
+   *  The gap between checks ramps 120ms → 400ms rather than sitting flat at 400ms.
+   *  Autosave normally lands within a few hundred ms of the composer settling, so the
+   *  flat interval spent most of its time asleep just past the moment the draft became
+   *  ready; the ramp catches that case without turning a genuinely slow save into a
+   *  request flood. `abort` (optional) stops the loop early once nobody is waiting. */
+  async function waitForDraftToMatch(conversationId, composerText, timeoutMs = 4000, abort) {
+    const want = _normReplyText(composerText);
+    const deadline = Date.now() + timeoutMs;
+    let gap = 120;
+    while (Date.now() < deadline && !abort?.()) {
+      const d = await kustomerGetConversationDraft(conversationId).catch(() => null);
+      if (d && _normReplyText(draftPlainText(d.attributes)) === want) return d;
+      await _sleep(gap);
+      gap = Math.min(400, Math.round(gap * 1.5));
+    }
+    return null;
+  }
+  let _replyPrime = null;
+
+  /** The prefetch for this exact send, or null if there isn't a usable one. Composer
+   *  text is the key: an edit between arming and confirming invalidates the draft we
+   *  were waiting on, and we would rather re-poll than send the previous wording. */
+  function _takeReplyPrime(conversationId, composerText) {
+    const p = _replyPrime;
+    _replyPrime = null;
+    if (!p) return null;
+    const usable = p.conversationId === conversationId
+      && _normReplyText(p.composerText) === _normReplyText(composerText);
+    if (!usable) { p.cancelled = true; return null; }
+    return p;
+  }
+
+  /** Wait out the prefetch's own poll rather than starting a second one against the
+   *  same endpoint. Resolves the instant it lands, or null once `timeoutMs` passes —
+   *  at which point the poller is called off and the caller falls back. */
+  async function _primedDraft(prime, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (!prime.draft && !prime.done && Date.now() < deadline) await _sleep(50);
+    prime.cancelled = true;   // no-op if it already landed
+    return prime.draft;
+  }
+
+  /** Send the reply currently sitting in the composer, as an email to the customer.
+   *
+   *  Body source is Kustomer's own autosaved draft whenever it agrees with what's on
+   *  screen — that copy carries the link entities and inline styles a plain-text
+   *  serialization would drop. If autosave hasn't caught up (our token fill lands via
+   *  a synthetic paste, so it can lag), we write the composer's text ourselves rather
+   *  than send something the agent isn't looking at.
+   *
+   *  Two PUTs, in this order: content, then the same body again with `sendAt`. A
+   *  scheduled draft is frozen (409 'Cannot edit scheduled draft'), so content first.
+   *  Throws on any hard failure — nothing is sent then. */
+  async function sendConversationReply({ customerId, conversationId, onStatus }) {
+    const status = (m) => { try { onStatus?.(m); } catch (_) {} };
+    if (!customerId || !conversationId) throw new Error('No open conversation');
+
+    const composer = getComposer();
+    const composerText = (composer?.innerText || '').trim();
+
+    // Started when the button armed; usually already resolved. Falling back costs a
+    // poll, never correctness — see primeReplySend.
+    const prime = _takeReplyPrime(conversationId, composerText);
+    // The recipient is a separate GET that depends on nothing below it, so it runs
+    // alongside the draft wait instead of after it.
+    const recipientP = prime ? prime.recipient
+                             : resolveReplyRecipient(conversationId).catch(() => null);
+
+    let draft = null;
+    if (composerText) {
+      // Only say "Reading draft…" if we are actually about to wait on one — with a
+      // warm prefetch this resolves in a tick and the agent sees "Sending…" directly.
+      if (!prime?.draft) status('Reading draft…');
+      draft = prime ? await _primedDraft(prime, 4000)
+                    : await waitForDraftToMatch(conversationId, composerText);
+    }
+    let body, payload;
+
+    if (draft) {
+      // Kustomer's own copy — keeps links and italics.
+      body = draft.attributes.body || composerText;
+      payload = draft.attributes.payload || { draftJs: draftJsFromText(body) };
+    } else if (composerText) {
+      // Autosave never caught up. Send what's on screen: `body` goes out unescaped,
+      // so any markdown characters in it render as formatting — an acceptable trade
+      // against sending a body the agent never saw.
+      console.warn('[BirdsEye] reply: draft autosave lagged — sending composer text (formatting flattened).');
+      body = composerText;
+      payload = { draftJs: draftJsFromText(composerText) };
+      draft = await kustomerGetConversationDraft(conversationId)
+           || { id: await kustomerCreateDraft(customerId, 'email', conversationId) };
+      status('Writing draft…');
+      await kustomerUpdateDraft(draft.id, { body, channel: 'email', payload });
+    } else {
+      // Composer closed or empty — the saved draft is all there is.
+      draft = await kustomerGetConversationDraft(conversationId);
+      if (!draft?.attributes?.body) throw new Error('Nothing to send — the reply is empty');
+      body = draft.attributes.body;
+      payload = draft.attributes.payload || { draftJs: draftJsFromText(body) };
+    }
+
+    // Last line of defence against a half-filled macro reaching a customer. The token
+    // fill is best-effort (it degrades to a clipboard fallback the agent completes by
+    // hand), so a live "[MONTH]" in the body is a real possibility — and it is the one
+    // failure that is embarrassing rather than merely broken. Checked unescaped: the
+    // draft's `body` is markdown, where the brackets come through as \[MONTH\].
+    const unfilled = FILL_VARIABLES
+      .map(v => '[' + v.key + ']')
+      .filter(t => String(body).replace(/\\/g, '').includes(t) || composerText.includes(t));
+    if (unfilled.length) throw new Error('Unfilled token(s) in the reply: ' + unfilled.join(', '));
+
+    const to = await recipientP;
+    if (!to) throw new Error('No recipient address for this conversation');
+
+    status('Sending…');
+    await kustomerUpdateDraft(draft.id, {
+      body,
+      channel: 'email',
+      from: { email: KUSTOMER_REPLY_FROM },
+      to: [{ email: to }],
+      sendAt: new Date().toISOString(),
+      payload,
+      template: KUSTOMER_REPLY_TEMPLATE,
+      app: KUSTOMER_REPLY_APP,
+    });
+    // composerText is the agent's copy as they saw it on screen; `body` is the
+    // markdown serialization that went to Kustomer. The log wants the former to
+    // compare against the macro, and the latter as the record of what was sent.
+    return { to, body, composerText, draftId: draft.id };
+  }
+
+  /** After an API send the composer still shows the reply: the send went around
+   *  Kustomer's editor, so its in-memory draft never learned the text went out.
+   *  Clear it through Kustomer's own discard (trash → "Yes, discard") so its store
+   *  resets too — wiping the editor ourselves would leave Kustomer autosaving into
+   *  a draft that no longer exists.
+   *
+   *  Waits until the server has dropped the sent draft first: the send is a PUT with
+   *  `sendAt`, and discarding before Kustomer consumes it could delete the email with
+   *  it. Then only acts while the same conversation is open and the composer still
+   *  holds exactly what went out, so nothing the agent typed since is ever lost.
+   *  Returns true when the composer ends up clear. */
+  async function clearComposerAfterSend({ conversationId, draftId, sentText, timeoutMs = 15000 }) {
+    // Not kustomerGetConversationDraft: it reads a failed GET as "no draft", and a
+    // false "gone" here is the one mistake that could cancel the send.
+    const draftStillThere = async () => {
+      const res = await fetch(
+        `${KUSTOMER_API_BASE}/v1/conversations/${conversationId}/drafts?client-request-id=${_aiUuid()}`,
+        { credentials: 'include', headers: _aiHeaders() },
+      );
+      if (!res.ok) throw new Error('drafts ' + res.status);
+      return ((await res.json())?.data || []).some(d => d.id === draftId);
+    };
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      try { if (!(await draftStillThere())) break; } catch (_) {}
+      if (Date.now() > deadline) return false;
+      await _sleep(500);
+    }
+
+    if (getConversationIdFromURL() !== conversationId) return false;
+    const composer = getComposer();
+    const current = _normReplyText(composer?.innerText || '');
+    if (!current) return true;
+    if (current !== _normReplyText(sentText || '')) return false;
+
+    // Nearest trash icon walking up from the editor is the reply box's own toolbar.
+    let trash = null;
+    for (let n = composer.parentElement, i = 0; n && !trash && i < 14; n = n.parentElement, i++) {
+      trash = n.querySelector('svg[data-icon="trash"]')?.closest('button') || null;
+    }
+    if (!trash) return false;
+    trash.click();
+
+    let yes = null;
+    const until = Date.now() + 3000;
+    while (!yes && Date.now() < until) {
+      const dlg = [...document.querySelectorAll('.ReactModalPortal [role="dialog"]')]
+        .find(x => /discard draft/i.test(x.innerText || ''));
+      yes = dlg ? [...dlg.querySelectorAll('button')].find(b => /^yes,?\s*discard$/i.test((b.innerText || '').trim())) : null;
+      if (!yes) await _sleep(100);
+    }
+    if (yes) { yes.click(); await _sleep(300); }
+    return !getComposer();
+  }
+
+  /** Fill the macro vars we can resolve. customer.firstName + currentUser.displayName
+   *  only; BirdsEye [TOKENS] and integration vars ({{recharge…}}, {{shopify…}}) are
+   *  left as-is (the former for the Fill step, the latter dropped intentionally). */
+  function interpolateMacro(text, { firstName, agentName }) {
+    return String(text || '')
+      .replace(/\{\{\s*customer\.firstName\s*\}\}/g, firstName || '')
+      .replace(/\{\{\s*currentUser\.displayName\s*\}\}/g, agentName || '');
+  }
+
+  /** Build a draft PUT payload from a shortcut's template, interpolated. Reuses the
+   *  shortcut's own draftJs blocks; clears inline styles/entities on any block we
+   *  rewrite so substitution can't misalign their offsets. */
+  function buildFilledDraftPayload(shortcutAttrs, vars) {
+    const body = interpolateMacro(shortcutAttrs?.draft?.text || '', vars);
+    const srcDraftJs = shortcutAttrs?.payload?.text;
+    let draftJs;
+    if (srcDraftJs?.blocks) {
+      draftJs = {
+        blocks: srcDraftJs.blocks.map(b => {
+          const text = interpolateMacro(b.text || '', vars);
+          if (text === b.text) return { ...b };
+          // Block changed by substitution → drop ranges to avoid offset drift.
+          return { ...b, text, inlineStyleRanges: [], entityRanges: [] };
+        }),
+        entityMap: srcDraftJs.entityMap || {},
+      };
+    } else {
+      // No draftJs template — synthesize plain unstyled blocks from the body text.
+      draftJs = {
+        blocks: body.split('\n').map(line => ({
+          key: _draftBlockKey(), text: line, type: 'unstyled', depth: 0,
+          data: {}, inlineStyleRanges: [], entityRanges: [],
+        })),
+        entityMap: {},
+      };
+    }
+    return { channel: 'email', body, payload: { draftJs } };
+  }
+
+  /** Fill the conversation's reply draft from a Kustomer shortcut (macro). Interpolates
+   *  name vars, writes the result into the conversation's *existing* composer draft
+   *  (creating one only if none exists), and mirrors it to the clipboard as a fallback
+   *  for when the open Draft.js composer doesn't live-refresh. BirdsEye [TOKENS] are
+   *  left for the Fill step. Returns { draftId, body }. */
+  async function prefillReply(customerId, conversationId, shortcutId, user) {
+    const attrs = await kustomerGetShortcut(shortcutId);
+    let agentName = '';
+    try { agentName = (await kustomerCurrentUser()).displayName; } catch (_) {}
+    const vars = {
+      firstName: toProperCase(user?.firstName || '') || '',
+      agentName,
+    };
+    const payload = buildFilledDraftPayload(attrs, vars);
+    const draftId = await kustomerGetConversationDraftId(conversationId)
+                 || await kustomerCreateDraft(customerId, 'email', conversationId);
+    await kustomerUpdateDraft(draftId, payload);
+    try { GM_setClipboard(payload.body); } catch (_) {}
+    return { draftId, body: payload.body };
+  }
+
+  // Conversation-level attributes the CCPA macro sets (its name + category fields).
+  // Configurable bit (the shortcut id) lives in settings; these belong to the one
+  // Cancel-My-Subscription macro CCPA drives.
+  const CCPA_CONVERSATION_NAME = 'Regarding your Scentbird Subscription cancellation...';
+  const CCPA_CONVERSATION_CUSTOM = {
+    categoryStr: 'Cancel My Subscription',
+    cancelMySubscriptionWrapUpStr: 'Customer Requested Cancellation::Cancelled Subscription via Admin',
+  };
+
+  /** Apply the CCPA macro's conversation actions: rename, self-assign, set categories.
+   *  Self-assign is best-effort (skipped if the agent id can't be resolved). */
+  /** PATCH a conversation. `sourceShortcutId` attributes the change to a Kustomer
+   *  shortcut, mirroring the UI's x-kustomer-ui-source-* headers when a macro drives it. */
+  async function patchConversation(conversationId, body, sourceShortcutId) {
+    const reqId = _aiUuid();
+    const headers = { ..._aiHeaders(), 'x-kustomer-client-request-id': reqId };
+    if (sourceShortcutId) {
+      headers['x-kustomer-ui-source-id'] = sourceShortcutId;
+      headers['x-kustomer-ui-source-type'] = 'shortcut';
+    }
+    const res = await fetch(
+      `${KUSTOMER_API_BASE}/v1/conversations/${conversationId}?client-request-id=${reqId}`,
+      { method: 'PATCH', credentials: 'include', headers, body: JSON.stringify(body) },
+    );
+    if (!res.ok) throw new Error('Kustomer conversation PATCH ' + res.status);
+    return (await res.json())?.data;
+  }
+
+  async function applyCcpaConversationMacro(conversationId, shortcutId) {
+    const body = { name: CCPA_CONVERSATION_NAME, custom: { ...CCPA_CONVERSATION_CUSTOM } };
+    try { body.assignedUsers = [await kustomerCurrentUserId()]; }
+    catch (e) { console.warn('[BirdsEye] CCPA self-assign skipped', e); }
+    return patchConversation(conversationId, body, shortcutId);
+  }
+
+  // Wrap-up the ORIGINATING info@scentbird.com ticket carries when it's closed. Same
+  // two fields the new ticket gets — the captured PATCHes hold identical values — so
+  // it aliases rather than duplicates them. Split the day they genuinely differ.
+  const CCPA_ORIGIN_CLOSE_CUSTOM = { ...CCPA_CONVERSATION_CUSTOM };
+
+  /** Close the info@scentbird.com hand-off ticket that triggered a CCPA run.
+   *
+   *  Two PATCHes, categories before the close. Kustomer's UI sets each wrap-up field
+   *  with its own request and only then marks the conversation done, and that order is
+   *  worth keeping: a conversation that reaches `done` uncategorised is the state
+   *  nobody goes back to fix. */
+  async function closeCcpaOriginTicket(conversationId) {
+    await patchConversation(conversationId, { custom: { ...CCPA_ORIGIN_CLOSE_CUSTOM } });
+    return patchConversation(conversationId, { status: 'done' });
+  }
+
   /** When an Apply hits a duplicate-email 409, find the conflicting Kustomer
    *  customer and rewire the Apply button into a two-stage Merge & retry control.
    *  Returns true when handled (caller should NOT also show the duplicate error). */
@@ -6757,7 +8644,7 @@
 
     btn.disabled = true;
     btn.textContent = '🔍 Finding conflict…';
-    btn.style.background = '#a16207';
+    btn.style.background = 'var(--sb-solid-warn)';
 
     let conflict;
     try {
@@ -6785,8 +8672,8 @@
       if (!armed) {
         armed = true;
         btn.textContent = '⚠ Click again to merge';
-        btn.style.background = '#b45309';
-        armTimer = setTimeout(() => { armed = false; btn.textContent = idleText; btn.style.background = '#a16207'; }, 4000);
+        btn.style.background = 'var(--sb-solid-warn-hi)';
+        armTimer = setTimeout(() => { armed = false; btn.textContent = idleText; btn.style.background = 'var(--sb-solid-warn)'; }, 4000);
         return;
       }
       clearTimeout(armTimer);
@@ -6797,7 +8684,8 @@
         // source = current conversation's customer (gets folded in)
         await kustomerMergeCustomers({ target: conflict.id, source: currentId });
         btn.textContent = '✓ Merged';
-        btn.style.background = '#059669';
+        btn.style.background = 'var(--sb-solid-success)';
+        // After merge, Kustomer's UI re-routes the conversation to target on its own.
       } catch (e) {
         btn.disabled = false;
         btn.textContent = '✘ Merge failed: ' + e.message;
@@ -6821,6 +8709,8 @@
       },
     );
     if (!res.ok) {
+      // Parse Kustomer's structured error envelope when present, so the UI surfaces
+      // an actionable message instead of just an HTTP code.
       let detail = 'Kustomer PATCH ' + res.status;
       try {
         const errBody = await res.json();
@@ -6835,6 +8725,329 @@
       throw new Error(detail);
     }
     return (await res.json())?.data?.attributes;
+  }
+
+  /** Parse `/app/customers/{customerId}/event/{conversationId}` from URL. */
+  function getConversationIdFromURL() {
+    const m = window.location.href.match(/\/event\/([0-9a-f]{24})/);
+    return m ? m[1] : null;
+  }
+
+  // ── Generic CRM query as a promise ─────────────────────────────────────────
+  // The callback fetchers each shape their result for one panel (fetchLastOrders
+  // slices to 4, fetchCharges keeps one billing group). The agent wants the whole
+  // record, so this goes to the same queries directly and hands back `data`.
+  function crmQueryP(operationName, query, variables) {
+    return new Promise((resolve, reject) => {
+      if (!getAccessToken()) return reject(new Error('Not signed in to CRM (Okta).'));
+      crmRequest({
+        method: 'POST', url: GRAPHQL_URL,
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ operationName, query, variables }),
+        onload(res) {
+          if (res.status === 401) { handle401(); return reject(new Error('CRM token expired')); }
+          if (res.status === 403) { handle403(); return reject(new Error('CRM captcha required')); }
+          try {
+            const json = JSON.parse(res.responseText);
+            if (json.errors?.length) return reject(new Error(json.errors[0]?.message || 'GraphQL error'));
+            resolve(json?.data || {});
+          } catch (e) { reject(new Error('CRM parse error')); }
+        },
+        onerror() { reject(new Error('CRM network error')); },
+      });
+    });
+  }
+
+  // ── Live carrier tracking: Asendia ────────────────────────────────────────
+  // Asendia parcels are looked up in Asendia's own tracking system — the same API its
+  // public tracking page (a1.asendiausa.com/tracking) calls. That page ships a public
+  // API key and brand key in its script; they are read from the script at runtime
+  // (cached, re-read on a 401/403) rather than hardcoded, so a key rotation on their
+  // side doesn't break this. Undocumented endpoint: every failure falls back to the CRM
+  // tracking timeline, labelled as such. Street addresses in scan locations are dropped.
+  const ASENDIA_PAGE_SCRIPT = 'https://a1.asendiausa.com/tracking/js/main.js';
+  const ASENDIA_DEFAULT_TRACKING_KEY = 'AE654169-0B14-45F9-8498-A8E464E13D26';
+  const ASENDIA_CONFIG_TTL_MS = 6 * 60 * 60 * 1000;
+  const ASENDIA_RESULT_TTL_MS = 10 * 60 * 1000;
+  let _asendiaConfig = null;
+  const _asendiaResults = new Map();   // TRACKINGNO → { at, data }
+
+  function _gmGet(url, headers = {}) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET', url, headers, timeout: 15000,
+        onload: (res) => resolve({ status: res.status, text: res.responseText || '' }),
+        onerror: () => reject(new Error('network error')),
+        ontimeout: () => reject(new Error('timed out')),
+      });
+    });
+  }
+
+  /** "courier" from the order's tracking link (scentbird.com/tracking?courier=asendia-us&…). */
+  function _orderCourier(o) {
+    const url = o?.tracking?.trackingUrl || o?.shipment?.trackingUrl || '';
+    const m = /[?&]courier=([^&#]+)/i.exec(url);
+    return m ? decodeURIComponent(m[1]).toLowerCase() : null;
+  }
+
+  async function _asendiaConfigGet(force = false) {
+    if (!force && _asendiaConfig && Date.now() - _asendiaConfig.at < ASENDIA_CONFIG_TTL_MS) return _asendiaConfig;
+    const { status, text } = await _gmGet(ASENDIA_PAGE_SCRIPT);
+    if (status !== 200) throw new Error(`Asendia page script ${status}`);
+    const field = (name) => (new RegExp(`"${name}"\\s*:\\s*"([^"]+)"`).exec(text) || [])[1] || null;
+    const cfg = {
+      baseUrl: field('baseUrl'),
+      auth: field('authorizationHeaderValue'),
+      apiKey: field('a1ApiKeyHeaderValue'),
+      trackingKey: (/"([0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12})";let\s/i.exec(text) || [])[1] || ASENDIA_DEFAULT_TRACKING_KEY,
+      at: Date.now(),
+    };
+    if (!cfg.baseUrl || !cfg.auth || !cfg.apiKey) throw new Error('Asendia page script changed — keys not found');
+    _asendiaConfig = cfg;
+    return cfg;
+  }
+
+  const _finalMileCarrier = (link) => {
+    const host = (() => { try { return new URL(link).hostname.replace(/^www\./, ''); } catch (_) { return ''; } })();
+    const known = [[/royalmail/, 'Royal Mail'], [/uniuni/, 'UniUni'], [/canadapost|postescanada/, 'Canada Post'], [/usps/, 'USPS'], [/auspost/, 'Australia Post'], [/dhl/, 'DHL'], [/evri|hermes/, 'Evri'], [/purolator/, 'Purolator']];
+    return (known.find(([re]) => re.test(host)) || [null, host || null])[1];
+  };
+
+  /** Live Asendia tracking for one tracking number. Resolves { found:false } when
+   *  Asendia has no record, throws on transport/API failure. */
+  async function asendiaTracking(trackingNo, { force = false } = {}) {
+    const tn = String(trackingNo || '').trim().toUpperCase();
+    if (!tn) return { found: false };
+    const hit = _asendiaResults.get(tn);
+    if (!force && hit && Date.now() - hit.at < ASENDIA_RESULT_TTL_MS) return hit.data;
+
+    const call = async (cfg) => _gmGet(
+      `${cfg.baseUrl}/api/A1/TrackingBranded/Tracking?trackingKey=${encodeURIComponent(cfg.trackingKey)}&trackingNumber=${encodeURIComponent(tn)}`,
+      { Authorization: cfg.auth, 'X-AsendiaOne-ApiKey': cfg.apiKey, Accept: 'application/json' },
+    );
+    let res = await call(await _asendiaConfigGet());
+    if (res.status === 401 || res.status === 403) res = await call(await _asendiaConfigGet(true));   // keys rotated
+    if (res.status !== 200) throw new Error(`Asendia tracking ${res.status}`);
+    let j;
+    try { j = JSON.parse(res.text); } catch (_) { throw new Error('Asendia tracking: unreadable response'); }
+
+    const s = j?.trackingBrandedSummary;
+    const code = j?.responseStatus?.responseStatusCode;
+    let data;
+    if (!s || code === 204 || code === 404) {
+      data = { found: false };
+    } else {
+      const events = (Array.isArray(j.trackingBrandedDetail) ? j.trackingBrandedDetail : [])
+        .map(e => {
+          const L = e.eventLocationDetails || {};
+          return { code: e.eventCode || null, description: e.eventDescription || '', at: e.eventOn || null,
+            location: [L.city, L.province, L.countryIso2].filter(Boolean).join(', ') || null, source: e.eventSource || null };
+        })
+        .filter(e => e.at)
+        .sort((a, b) => new Date(a.at) - new Date(b.at));   // oldest first, like CRM
+      const vendorNo = s.trackingNumberVendor && String(s.trackingNumberVendor).toUpperCase() !== tn ? s.trackingNumberVendor : null;
+      data = {
+        found: true,
+        service: s.service || null, weight: s.weight || null, destination: s.destinationCountry || null,
+        progress: s.trackingProgress ? { completed: s.trackingProgress.completed, total: s.trackingProgress.total } : null,
+        finalMile: s.finalMileTrackingLink || vendorNo
+          ? { carrier: _finalMileCarrier(s.finalMileTrackingLink), trackingNumber: vendorNo, link: s.finalMileTrackingLink || null }
+          : null,
+        lastMileMessage: s.lastMileMessage || null,
+        events,
+        fetchedAt: new Date().toISOString(),
+      };
+    }
+    _asendiaResults.set(tn, { at: Date.now(), data });
+    return data;
+  }
+
+  /** Raw message attributes for a conversation, oldest first. The formatted variant
+   *  above flattens to "[CUSTOMER] preview" strings; the CCPA parser needs the actual
+   *  fields, since `preview` is truncated and the identifiers can sit past the cut. */
+  async function kustomerGetConversationMessagesRaw(conversationId, max = 10) {
+    const res = await fetch(
+      `${KUSTOMER_API_BASE}/v1/conversations/${conversationId}/messages?page=1&pageSize=${max}&client-request-id=${_aiUuid()}`,
+      { credentials: 'include', headers: _aiHeaders() },
+    );
+    if (!res.ok) throw new Error('Kustomer messages ' + res.status);
+    return ((await res.json())?.data || [])
+      .map(m => m.attributes || {})
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // MUTATION OBSERVER — wire everything on header appear
+  // ══════════════════════════════════════════════════════════════════════════
+
+  let _lastObservedHref = location.href;
+  const observer = new MutationObserver(() => {
+    if (location.href !== _lastObservedHref) {
+      _lastObservedHref = location.href;
+      window.dispatchEvent(new Event('sb-route-change'));
+    }
+    if (toolbarEl && !document.body.contains(toolbarEl)) {
+      toolbarEl = null;
+      fillNameRegistered = false;
+      clearCustomerCtx();
+      ['sb-order-panel','sb-charges-panel','sb-cancel-panel','sb-downgrade-panel','sb-search-panel','sb-queue-panel','sb-edit-customer-panel'].forEach(id => document.getElementById(id)?.remove());
+    }
+    if (!ensureToolbar()) return;
+    registerFillName();
+    registerCrmButtons();
+    registerSpecialsMenu();
+    refreshOktaButtonState();
+    refreshUserInfoBar();
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  // ── Stash selection on mousedown (Edge clears it before click fires) ────
+
+  document.addEventListener('mousedown', () => {
+    stashedSelection = (window.getSelection()?.toString() || '').trim();
+  }, true);
+
+  // ── Keyboard shortcut ─────────────────────────────────────────────────────
+
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.shiftKey && e.key === 'Q') {
+      if (document.getElementById('sb-search-panel')) { removePanel('sb-search-panel'); return; }
+      showSearchPanel(window.getSelection().toString().trim());
+    }
+  });
+
+  // ── Customer API auth via hidden iframe ──
+
+  let _customerApiReady = false;
+  let _customerCsrfToken = null;
+
+  function ensureCustomerAuth(callback) {
+    if (_customerApiReady) return callback(true);
+
+    const gwebLink = cachedCustomerCtx?._gwebLink;
+    if (!gwebLink) { console.warn('[BirdsEye] No gwebLink'); return callback(false); }
+
+    const popup = window.open(gwebLink, 'sb_auth', 'width=1,height=1,left=-9999,top=-9999,menubar=no,toolbar=no,location=no,status=no');
+    window.focus();
+    if (!popup) console.warn('[BirdsEye] customer auth: popup blocked');
+
+    setTimeout(() => {
+      try { popup?.close(); } catch(e) {}
+
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: 'https://api.scentbird.com/graphql?opname=authProbe',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Origin': 'https://www.scentbird.com',
+          'Referer': 'https://www.scentbird.com/',
+        },
+        data: JSON.stringify({
+          // Introspection is disabled on this API, and currentUser answers guests too —
+          // personalInfo is only non-null once the gwebLink session has landed.
+          operationName: 'authProbe',
+          variables: {},
+          query: `query authProbe { currentUser { data { personalInfo { firstName } } } }`
+        }),
+        onload(res) {
+          const csrfMatch = res.responseHeaders.match(/x-csrf-token:\s*(.+)/i);
+          if (csrfMatch) _customerCsrfToken = csrfMatch[1].trim();
+
+          try {
+            const body = JSON.parse(res.responseText);
+            if (body?.data?.currentUser?.data?.personalInfo) {
+              _customerApiReady = true;
+              callback(true);
+            } else {
+              console.warn('[BirdsEye] customer auth probe: no data', res.status, (body?.errors || []).map(e => e.message).join(' | ').slice(0, 300));
+              callback(false);
+            }
+          } catch(e) {
+            console.warn('[BirdsEye] customer auth probe: non-JSON', res.status, String(res.responseText || '').slice(0, 200));
+            callback(false);
+          }
+        },
+        onerror(res) {
+          console.warn('[BirdsEye] customer auth probe: network error', res?.status, res?.error);
+          callback(false);
+        }
+      });
+    }, 5000);
+  }
+
+  function customerApiDelete(flatIndex, callback) {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Origin': 'https://www.scentbird.com',
+      'Referer': 'https://www.scentbird.com/',
+    };
+    if (_customerCsrfToken) headers['x-csrf-token'] = _customerCsrfToken;
+
+    GM_xmlhttpRequest({
+      method: 'POST',
+      url: 'https://api.scentbird.com/graphql?opname=QueueDeleteItem',
+      headers,
+      data: JSON.stringify({
+        operationName: 'QueueDeleteItem',
+        variables: {
+          mutationInput: { index: flatIndex, metadata: { page: 'Queue', pageType: 'Queue', placement: 'queue' } },
+          queueInput: { limit: 24 }
+        },
+        query: `mutation QueueDeleteItem($mutationInput: QueueDeleteItemInput!, $queueInput: QueueInput) {
+          queueDeleteItem(input: $mutationInput) {
+            queue(input: $queueInput) {
+              queueItems { month year products { flatIndex queueItemId tradingItem { productInfo { name } } } }
+            }
+            error {
+              ... on QueueDeleteItemError { queueDeleteItemErrorCode: errorCode message }
+              ... on SecurityError { securityErrorCode: errorCode message }
+              ... on ServerError { serverErrorCode: errorCode message }
+              ... on ValidationError { validationErrorCode: errorCode message }
+            }
+          }
+        }`
+      }),
+      onload(res) {
+        try {
+          const body = JSON.parse(res.responseText);
+          const err = body?.data?.queueDeleteItem?.error;
+          const errMsg = err?.message;
+          if (errMsg) return callback(null, errMsg);
+          if (body?.errors?.length) return callback(null, body.errors[0].message);
+          callback(body?.data?.queueDeleteItem, null);
+        } catch(e) { callback(null, 'Parse error'); }
+      },
+      onerror() { callback(null, 'Network error'); }
+    });
+  }
+
+  /** Generic customer-side API call (api.scentbird.com). Requires ensureCustomerAuth first. */
+  function customerApiCall(operationName, query, variables, callback) {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Origin': 'https://www.scentbird.com',
+      'Referer': 'https://www.scentbird.com/',
+    };
+    if (_customerCsrfToken) headers['x-csrf-token'] = _customerCsrfToken;
+
+    GM_xmlhttpRequest({
+      method: 'POST',
+      url: 'https://api.scentbird.com/graphql?opname=' + operationName,
+      headers,
+      data: JSON.stringify({ operationName, variables, query }),
+      onload(res) {
+        try {
+          const body = JSON.parse(res.responseText);
+          if (body?.errors?.length) return callback(null, body.errors[0].message);
+          callback(body?.data, null);
+        } catch(e) { callback(null, 'Parse error'); }
+      },
+      onerror() { callback(null, 'Network error'); }
+    });
   }
 
 })();

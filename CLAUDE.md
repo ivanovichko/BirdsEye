@@ -1,6 +1,12 @@
 # BirdsEye — Claude context
 
-Tampermonkey userscript for Scentbird CRM support agents. Single IIFE in `BirdsEye.user.js` (~6270 lines, vanilla JS, no build step). Current version: **8.10.2**. Architecture overview in `DEVELOPER.md` (line ranges there are pre-Okta and slightly stale).
+Tampermonkey userscript for Scentbird CRM support agents. Single IIFE in `BirdsEye.user.js` (~9050 lines, vanilla JS). Current version: **9.0.0**. Architecture overview in `DEVELOPER.md` (line ranges there are pre-Okta and stale). **Line numbers cited below predate 9.0.0 — grep for the function name instead.**
+
+## Since 9.0.0: prod is generated from beta
+
+`BirdsEye.user.js` is built from the gitignored `.beta/BirdsEye.user.js` minus the AI assistant: `.beta/prod-build/build.sh <version>` swaps in the prod header, unhooks the ▶ AI toggle and the Groq / AI-macro settings, prunes everything unreachable, checks for dangling references and diffs the panels against beta. Make feature changes in beta, then rebuild — hand edits to prod are overwritten by the next build.
+
+9.0.0 brought over from beta: ★ Specials ▾ (🕒 OT, 🗂 Account Deletion Ticket — the former CCPA flow, now also unsubscribes from emails), ⬇ Downgrade (add-on toggles + CRM's DOWNGRADE plan list), ✉ Unsubscribe from Emails in Cancel Sub, Send & snooze / snooze "Waiting on …" notes, coupon tags in the info bar, live Asendia scans in Last Orders, refunds without the fulfilment gate (13 CRM refund reasons), plus beta's UI refactor (`el()`, `.sb-ui` classes, `armedButton`, section builders).
 
 ## Runtime
 
