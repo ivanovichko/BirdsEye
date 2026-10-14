@@ -4996,6 +4996,7 @@
     { value: 'charge clarification', label: 'Charge clarification' },
     { value: 'order change needed',  label: 'Order change needed' },
     { value: 'clarification needed', label: 'Clarification needed' },
+    { value: 'backorder',            label: 'Backorder' },
     { value: '__OTHER__',            label: 'Other (custom comment)' },
   ];
 
@@ -6554,7 +6555,7 @@
   const SNOOZE_POPOVER_SEL = '[class*="snoozePopoverKomponent__popover"]';
   const SEND_SNOOZE_SEL = '[data-kt="popoverMenuItem-snooze"]';
   const SEND_SNOOZE_MS = 24 * 60 * 60 * 1000;
-  const WAITING_ON = ['images', 'address confirmation', 'fragrance confirmation'];
+  const WAITING_ON = ['images', 'address confirmation', 'fragrance confirmation', 'account info', 'clarification'];
   let _snoozePick = null;   // { customerId, conversationId } once a popover option is clicked
 
   document.addEventListener('click', (e) => {
