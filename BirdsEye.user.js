@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      9.0.0
+// @version      9.0.1
 // @description  Unified toolbar for Scentbird support: CRM search, orders, charges, queue, edit / downgrade / cancel, replacements, refunds, Specials (OT, account deletion)
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -7135,17 +7135,6 @@
       toolbar.appendChild(spacer);
     }
 
-    addToolbarButton('sb-open-account-btn', '🔗 Open Account', (btn) => {
-      const user = cachedCustomerCtx?.user;
-      if (!user?.id) {
-        const label = !getAccessToken() ? '⚠ Sign in with Okta' : '✘ No customer';
-        btn.textContent = label;
-        btn.style.color = 'var(--sb-danger)';
-        setTimeout(() => { btn.textContent = '🔗 Open Account'; btn.style.color = ''; }, 2000);
-        return;
-      }
-      window.open(`https://crm.scentbird.com/user/${user.id}/profile/subscription`, '_blank');
-    });
     addToolbarButton('sb-crm-token-btn', '🔐 Sign in with Okta', () => {
       if (_captchaRequired) openCaptchaPopup();
       else startOktaLogin();
@@ -7524,17 +7513,29 @@
 
     const bar = document.createElement('div');
     bar.id = 'sb-user-info-bar';
-    bar.style.cssText = 'position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 30px 4px 10px;background:var(--sb-bg-deep);border-top:1px solid var(--sb-border-soft);font-family:Arial,sans-serif;font-size:var(--sb-fs-11);';
+    bar.style.cssText = 'position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 150px 4px 10px;background:var(--sb-bg-deep);border-top:1px solid var(--sb-border-soft);font-family:Arial,sans-serif;font-size:var(--sb-fs-11);';
 
-    // Manual refresh — re-fetches subscription + shipping address and re-renders.
-    const refreshBtn = document.createElement('button');
-    refreshBtn.textContent = '⟳';
-    refreshBtn.title = 'Refresh info bar';
-    refreshBtn.style.cssText = 'position:absolute;top:4px;right:8px;background:var(--sb-control-bg);border:1px solid var(--sb-border-soft);color:var(--sb-text-muted);border-radius:5px;cursor:pointer;font-size:var(--sb-fs-13);line-height:1;padding:2px 6px;';
-    refreshBtn.onmouseenter = () => refreshBtn.style.color = 'var(--sb-text)';
-    refreshBtn.onmouseleave = () => refreshBtn.style.color = 'var(--sb-text-muted)';
-    refreshBtn.onclick = () => { refreshBtn.textContent = '⏳'; refreshSubscriptionBar(); };
-    bar.appendChild(refreshBtn);
+    // Top-right corner: open the account in CRM, and a manual refresh that
+    // re-fetches subscription + shipping address and re-renders.
+    const corner = document.createElement('div');
+    corner.style.cssText = 'position:absolute;top:4px;right:8px;display:flex;gap:4px;';
+    const cornerBtn = (text, title, onclick) => {
+      const b = document.createElement('button');
+      b.textContent = text;
+      b.title = title;
+      b.style.cssText = 'background:var(--sb-control-bg);border:1px solid var(--sb-border-soft);color:var(--sb-text-muted);border-radius:5px;cursor:pointer;font-size:var(--sb-fs-13);line-height:1;padding:2px 6px;white-space:nowrap;';
+      b.onmouseenter = () => b.style.color = 'var(--sb-text)';
+      b.onmouseleave = () => b.style.color = 'var(--sb-text-muted)';
+      b.onclick = onclick;
+      corner.appendChild(b);
+      return b;
+    };
+    cornerBtn('🔗 Open Account', 'Open this customer in CRM', () => {
+      const user = cachedCustomerCtx?.user;
+      if (user?.id) window.open(`https://crm.scentbird.com/user/${user.id}/profile/subscription`, '_blank');
+    });
+    const refreshBtn = cornerBtn('⟳', 'Refresh info bar', () => { refreshBtn.textContent = '⏳'; refreshSubscriptionBar(); });
+    bar.appendChild(corner);
 
     // Identity line: name · email · shipping address (above the tag groups)
     const idLine = document.createElement('div');
