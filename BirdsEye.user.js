@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BirdsEye
 // @namespace    scentbird-kustomer
-// @version      9.0.1
+// @version      9.0.2
 // @description  Unified toolbar for Scentbird support: CRM search, orders, charges, queue, edit / downgrade / cancel, replacements, refunds, Specials (OT, account deletion)
 // @author       You
 // @match        https://scentbird.kustomerapp.com/*
@@ -5201,7 +5201,7 @@
     const reasonLabel = makeLabel('Refund reason');
     reasonLabel.style.marginTop = '0';
     box.appendChild(reasonLabel);
-    const reasonSel = makeSelect(REFUND_REASONS, 'CUSTOMER_CHANGED_THEIR_MIND');
+    const reasonSel = makeSelect(REFUND_REASONS, 'APPROVED_REFUND');
     reasonSel.style.marginBottom = '12px';
     box.appendChild(reasonSel);
 
@@ -5250,7 +5250,8 @@
 
             const refDate = new Date(charge.paymentDate);
             const refMonthLabel = refDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-            const commentText = (cancelledOrder ? 'Cancelled & Refunded ' : 'Refunded ') + refMonthLabel + ' order';
+            const reasonText = REFUND_REASONS.find(r => r.value === reason)?.label || reason;
+            const commentText = (cancelledOrder ? 'Cancelled & Refunded ' : 'Refunded ') + refMonthLabel + ' order, ' + reasonText;
 
             const afterComment = () => {
               statusEl.style.color = 'var(--sb-success-soft)';
@@ -6444,8 +6445,8 @@
 
   // ── Overtime mode ─────────────────────────────────────────────────────────
   // One click stamps the open ticket as overtime work: an internal note
-  // "OT - DD_MM_YYYY" and a tag OT_ASSIGNED_DD_MM (local date). The tag is dated, so
-  // a new one is needed every day — Kustomer's tag picker handles that by PATCHing
+  // "OT Assigned Ticket - DD_MM_YYYY" (local date) and the tag ot_assigned_tickets.
+  // A tag that doesn't exist yet — Kustomer's tag picker handles that by PATCHing
   // the conversation's tag list with the new tag's *name* in place of an id, which
   // creates it on the fly. An existing tag must go by id, so look it up first.
 
@@ -6522,133 +6523,18 @@
       btn.disabled = true;
       btn.textContent = '⏳';
       try {
-        // Tag first: if today's tag is already on the ticket, OT was already stamped —
-        // skip the note rather than post a duplicate.
-        const added = await kustomerAddConversationTag(conversationId, `OT_ASSIGNED_${dd}_${mm}`);
+        // Tag first: if it's already on the ticket, OT was already stamped — skip the
+        // note rather than post a duplicate.
+        const added = await kustomerAddConversationTag(conversationId, 'ot_assigned_tickets');
         if (!added) return finish('✔ Already OT', 'var(--sb-warning)');
-        await postPlainNote(customerId, conversationId, `OT - ${dd}_${mm}_${yyyy}`);
+        await postPlainNote(customerId, conversationId, `OT Assigned Ticket - ${dd}_${mm}_${yyyy}`);
         finish('✔ OT', 'var(--sb-success)');
       } catch (e) {
         console.warn('[BirdsEye] OT failed', e);
         finish('✘ ' + (e.message || 'failed'), 'var(--sb-danger)');
       }
     });
-    if (created) created.title = 'Overtime: note "OT - DD_MM_YYYY" + tag OT_ASSIGNED_DD_MM';
-  }
-
-  // ── Snooze note ───────────────────────────────────────────────────────────
-  // Two entry points, one form: "What are you waiting on?" → internal note
-  // "Waiting on <thing>".
-  //
-  // 1. Kustomer's snooze button (svg[data-icon=clock-snooze]) opens a popover of
-  //    options. Once one is picked and the popover closes, the form goes up and the
-  //    note posts. Escape / click-away (nothing picked) shows nothing.
-  // 2. The composer's ⋯ menu "Send & snooze 1 day" ([data-kt=popoverMenuItem-snooze])
-  //    is held before it acts (it fires on press — every pointer phase is swallowed on
-  //    window, capture, ahead of React). "Post & send" then does the whole job through
-  //    the API, in this order: send the reply (sendConversationReply, the same path as
-  //    the AI panel's Send + Pending), snooze 1 day, post the note — so the note lands
-  //    after the message. Kustomer's own auto-advance doesn't run; the ticket stays open.
-  //
-  // Ticket ids are captured when the action starts, so moving on can't post the note
-  // onto the next ticket.
-  const SNOOZE_POPOVER_SEL = '[class*="snoozePopoverKomponent__popover"]';
-  const SEND_SNOOZE_SEL = '[data-kt="popoverMenuItem-snooze"]';
-  const SEND_SNOOZE_MS = 24 * 60 * 60 * 1000;
-  const WAITING_ON = ['images', 'address confirmation', 'fragrance confirmation', 'account info', 'clarification'];
-  let _snoozePick = null;   // { customerId, conversationId } once a popover option is clicked
-
-  document.addEventListener('click', (e) => {
-    const pop = e.target.closest?.(SNOOZE_POPOVER_SEL);
-    if (!pop || e.target.closest('[class*="snoozePopoverKomponent__header"]')) return;
-    const customerId = getCustomerIdFromURL(), conversationId = getConversationIdFromURL();
-    if (!customerId || !conversationId || _snoozePick) return;
-    _snoozePick = { customerId, conversationId };
-    const deadline = Date.now() + 120000;   // Pick Date & Time can take a while
-    const wait = setInterval(() => {
-      if (document.querySelector(SNOOZE_POPOVER_SEL) && Date.now() < deadline) return;
-      clearInterval(wait);
-      const pick = _snoozePick; _snoozePick = null;
-      if (Date.now() < deadline) showWaitingOnPrompt(pick);
-    }, 300);
-  }, true);
-
-  ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => window.addEventListener(type, (e) => {
-    if (!e.isTrusted || !e.target.closest?.(SEND_SNOOZE_SEL)) return;
-    e.preventDefault(); e.stopImmediatePropagation();
-    if (type !== 'pointerdown' || document.getElementById('sb-snooze-note')) return;
-    const customerId = getCustomerIdFromURL(), conversationId = getConversationIdFromURL();
-    if (customerId && conversationId) showWaitingOnPrompt({ customerId, conversationId }, { sendFirst: true });
-  }, true));
-
-  /** "Waiting on …" form. `sendFirst`: send the composer reply and snooze 1 day before
-   *  the note (Send & snooze); otherwise just post the note (after a native snooze). */
-  function showWaitingOnPrompt({ customerId, conversationId }, { sendFirst = false } = {}) {
-    const id = 'sb-snooze-note';
-    const panel = createPanel({ id, title: sendFirst ? '💤 Send & snooze 1 day' : '💤 Snooze note', width: 340, centered: true, draggable: true });
-
-    panel.appendChild(makeLabel('WHAT ARE YOU WAITING ON?'));
-    const sel = el('select', { cls: 'sb-select', style: 'width:100%;box-sizing:border-box;' });
-    [...WAITING_ON, 'other'].forEach(v => sel.appendChild(el('option', {
-      text: v === 'other' ? 'Other (specify)' : v[0].toUpperCase() + v.slice(1), attrs: { value: v } })));
-    const other = el('input', { cls: 'sb-input', attrs: { placeholder: 'Waiting on…' },
-      style: 'display:none;width:100%;box-sizing:border-box;margin-top:6px;' });
-    sel.addEventListener('change', () => { other.style.display = sel.value === 'other' ? '' : 'none'; if (sel.value === 'other') other.focus(); });
-    const status = makeStatusEl();
-    const cancel = el('button', { cls: 'sb-btn sb-btn--ghost', text: sendFirst ? 'Cancel' : 'Skip', on: { click: () => removePanel(id) } });
-    const go = el('button', { cls: 'sb-btn sb-btn--primary', text: sendFirst ? 'Post & send' : 'Post note' });
-
-    const noteText = () => {
-      const what = sel.value === 'other' ? other.value.trim() : sel.value;
-      return what ? 'Waiting on ' + what : '';
-    };
-    const say = (msg, color) => { status.style.color = color || ''; status.textContent = msg; };
-
-    let sent = false, snoozed = false;
-    const run = async () => {
-      const text = noteText();
-      if (!text) { say('✘ Say what you are waiting on', 'var(--sb-danger)'); other.focus(); return; }
-      go.disabled = true; cancel.disabled = true; sel.disabled = true; other.disabled = true;
-      go.textContent = '⏳';
-      try {
-        if (sendFirst && !sent) {
-          const r = await sendConversationReply({ customerId, conversationId, onStatus: (m) => say(m) });
-          sent = true;
-          clearComposerAfterSend({ conversationId, draftId: r.draftId, sentText: r.composerText }).catch(() => {});
-        }
-        if (sendFirst && !snoozed) {
-          say('Snoozing 1 day…');
-          await patchConversation(conversationId, {
-            status: 'snoozed',
-            snooze: { time: new Date(Date.now() + SEND_SNOOZE_MS).toISOString(), status: 'scheduled' },
-          });
-          snoozed = true;
-        }
-        say('Posting note…');
-        await postPlainNote(customerId, conversationId, text);
-        removePanel(id);
-      } catch (err) {
-        console.warn('[BirdsEye] waiting-on flow failed', err);
-        // A retry resumes from the failed step — never re-sends a reply that went out.
-        const where = !sendFirst ? '' : !sent ? 'Not sent: ' : !snoozed ? 'Sent, snooze failed: ' : 'Sent & snoozed, note failed: ';
-        say('✘ ' + where + (err.message || 'failed'), 'var(--sb-danger)');
-        go.disabled = false; sel.disabled = false; other.disabled = false;
-        cancel.disabled = false;
-        if (sent) cancel.textContent = 'Close';
-        go.textContent = sent ? 'Retry' : (sendFirst ? 'Post & send' : 'Post note');
-      }
-    };
-    go.addEventListener('click', run);
-    panel.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.target === other)) { e.preventDefault(); if (!go.disabled) run(); }
-      if (e.key === 'Escape' && !cancel.disabled) removePanel(id);
-    });
-
-    panel.appendChild(sel);
-    panel.appendChild(other);
-    panel.appendChild(el('div', { cls: 'sb-row', style: 'justify-content:flex-end;gap:6px;margin-top:10px;' }, [cancel, go]));
-    panel.appendChild(status);
-    setTimeout(() => sel.focus(), 0);
+    if (created) created.title = 'Overtime: note "OT Assigned Ticket - DD_MM_YYYY" + tag ot_assigned_tickets';
   }
 
   // ── CCPA hand-offs from info@scentbird.com ────────────────────────────────
@@ -8276,253 +8162,6 @@
   /** Existing composer draft id for a conversation, or null if none saved yet. */
   async function kustomerGetConversationDraftId(conversationId) {
     return (await kustomerGetConversationDraft(conversationId))?.id || null;
-  }
-
-  // ── Sending an email reply ────────────────────────────────────────────────
-  // Same shape as postConversationNote: there is no send endpoint, a second PUT to
-  // the draft carrying `sendAt` IS the send. Email needs four fields a note doesn't —
-  // from/to/app/template — and none of them live on the draft object; Kustomer's web
-  // client computes them at send time, so we supply them the same way it does.
-  //
-  // `from` is deliberately a constant rather than derived from the inbound message's
-  // recipient: tickets that arrived at the old support@scentbird.mail.kustomerapp.com
-  // mailbox would otherwise reply out of it, and the live client no longer does that.
-  const KUSTOMER_REPLY_FROM = 'support@scentbird.com';
-  const KUSTOMER_REPLY_APP = 'postmark';
-  // Org email template (the branded HTML wrapper). Stable per org; if Scentbird ever
-  // changes it, sends fail loudly and this is the one line to update.
-  const KUSTOMER_REPLY_TEMPLATE = '67ea39f7a280fa09cc90f178';
-
-  /** Who a reply goes to: the address the customer actually wrote in from (newest
-   *  inbound email's `meta.from`), falling back to the Kustomer customer record. */
-  async function resolveReplyRecipient(conversationId) {
-    try {
-      const messages = await kustomerGetConversationMessagesRaw(conversationId, 20);
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const a = messages[i];
-        if (a.direction !== 'in') continue;
-        const from = a.meta?.from || (typeof a.from === 'string' ? a.from : a.from?.email);
-        if (from && /@/.test(from)) return String(from).trim();
-      }
-    } catch (e) {
-      console.warn('[BirdsEye] reply recipient: message scan failed', e);
-    }
-    return await resolveEmail();
-  }
-
-  /** Plain text → draftJs blocks. Only used when the server draft is too stale to
-   *  trust; it flattens links and italics, which is why it isn't the primary path. */
-  function draftJsFromText(text) {
-    return {
-      blocks: String(text || '').split('\n').map(line => ({
-        key: _draftBlockKey(), text: line, type: 'unstyled', depth: 0,
-        data: {}, inlineStyleRanges: [], entityRanges: [],
-      })),
-      entityMap: {},
-    };
-  }
-
-  const _normReplyText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
-
-  /** A draft's text as the composer renders it. Reads the draftJs blocks, NOT `body`:
-   *  `body` is a markdown serialization ("future \\- whenever", "*italic*"), so it
-   *  never compares equal to the composer's innerText. Blocks carry the clean text. */
-  function draftPlainText(attributes) {
-    const blocks = attributes?.payload?.draftJs?.blocks;
-    if (Array.isArray(blocks)) return blocks.map(b => b?.text || '').join('\n');
-    return attributes?.body || '';
-  }
-
-  const _sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-  /** Poll the conversation's draft until Kustomer has autosaved the composer's current
-   *  text into it. Returns the draft once it matches, or null on timeout — the caller
-   *  then falls back to serializing the composer itself.
-   *
-   *  The gap between checks ramps 120ms → 400ms rather than sitting flat at 400ms.
-   *  Autosave normally lands within a few hundred ms of the composer settling, so the
-   *  flat interval spent most of its time asleep just past the moment the draft became
-   *  ready; the ramp catches that case without turning a genuinely slow save into a
-   *  request flood. `abort` (optional) stops the loop early once nobody is waiting. */
-  async function waitForDraftToMatch(conversationId, composerText, timeoutMs = 4000, abort) {
-    const want = _normReplyText(composerText);
-    const deadline = Date.now() + timeoutMs;
-    let gap = 120;
-    while (Date.now() < deadline && !abort?.()) {
-      const d = await kustomerGetConversationDraft(conversationId).catch(() => null);
-      if (d && _normReplyText(draftPlainText(d.attributes)) === want) return d;
-      await _sleep(gap);
-      gap = Math.min(400, Math.round(gap * 1.5));
-    }
-    return null;
-  }
-  let _replyPrime = null;
-
-  /** The prefetch for this exact send, or null if there isn't a usable one. Composer
-   *  text is the key: an edit between arming and confirming invalidates the draft we
-   *  were waiting on, and we would rather re-poll than send the previous wording. */
-  function _takeReplyPrime(conversationId, composerText) {
-    const p = _replyPrime;
-    _replyPrime = null;
-    if (!p) return null;
-    const usable = p.conversationId === conversationId
-      && _normReplyText(p.composerText) === _normReplyText(composerText);
-    if (!usable) { p.cancelled = true; return null; }
-    return p;
-  }
-
-  /** Wait out the prefetch's own poll rather than starting a second one against the
-   *  same endpoint. Resolves the instant it lands, or null once `timeoutMs` passes —
-   *  at which point the poller is called off and the caller falls back. */
-  async function _primedDraft(prime, timeoutMs) {
-    const deadline = Date.now() + timeoutMs;
-    while (!prime.draft && !prime.done && Date.now() < deadline) await _sleep(50);
-    prime.cancelled = true;   // no-op if it already landed
-    return prime.draft;
-  }
-
-  /** Send the reply currently sitting in the composer, as an email to the customer.
-   *
-   *  Body source is Kustomer's own autosaved draft whenever it agrees with what's on
-   *  screen — that copy carries the link entities and inline styles a plain-text
-   *  serialization would drop. If autosave hasn't caught up (our token fill lands via
-   *  a synthetic paste, so it can lag), we write the composer's text ourselves rather
-   *  than send something the agent isn't looking at.
-   *
-   *  Two PUTs, in this order: content, then the same body again with `sendAt`. A
-   *  scheduled draft is frozen (409 'Cannot edit scheduled draft'), so content first.
-   *  Throws on any hard failure — nothing is sent then. */
-  async function sendConversationReply({ customerId, conversationId, onStatus }) {
-    const status = (m) => { try { onStatus?.(m); } catch (_) {} };
-    if (!customerId || !conversationId) throw new Error('No open conversation');
-
-    const composer = getComposer();
-    const composerText = (composer?.innerText || '').trim();
-
-    // Started when the button armed; usually already resolved. Falling back costs a
-    // poll, never correctness — see primeReplySend.
-    const prime = _takeReplyPrime(conversationId, composerText);
-    // The recipient is a separate GET that depends on nothing below it, so it runs
-    // alongside the draft wait instead of after it.
-    const recipientP = prime ? prime.recipient
-                             : resolveReplyRecipient(conversationId).catch(() => null);
-
-    let draft = null;
-    if (composerText) {
-      // Only say "Reading draft…" if we are actually about to wait on one — with a
-      // warm prefetch this resolves in a tick and the agent sees "Sending…" directly.
-      if (!prime?.draft) status('Reading draft…');
-      draft = prime ? await _primedDraft(prime, 4000)
-                    : await waitForDraftToMatch(conversationId, composerText);
-    }
-    let body, payload;
-
-    if (draft) {
-      // Kustomer's own copy — keeps links and italics.
-      body = draft.attributes.body || composerText;
-      payload = draft.attributes.payload || { draftJs: draftJsFromText(body) };
-    } else if (composerText) {
-      // Autosave never caught up. Send what's on screen: `body` goes out unescaped,
-      // so any markdown characters in it render as formatting — an acceptable trade
-      // against sending a body the agent never saw.
-      console.warn('[BirdsEye] reply: draft autosave lagged — sending composer text (formatting flattened).');
-      body = composerText;
-      payload = { draftJs: draftJsFromText(composerText) };
-      draft = await kustomerGetConversationDraft(conversationId)
-           || { id: await kustomerCreateDraft(customerId, 'email', conversationId) };
-      status('Writing draft…');
-      await kustomerUpdateDraft(draft.id, { body, channel: 'email', payload });
-    } else {
-      // Composer closed or empty — the saved draft is all there is.
-      draft = await kustomerGetConversationDraft(conversationId);
-      if (!draft?.attributes?.body) throw new Error('Nothing to send — the reply is empty');
-      body = draft.attributes.body;
-      payload = draft.attributes.payload || { draftJs: draftJsFromText(body) };
-    }
-
-    // Last line of defence against a half-filled macro reaching a customer. The token
-    // fill is best-effort (it degrades to a clipboard fallback the agent completes by
-    // hand), so a live "[MONTH]" in the body is a real possibility — and it is the one
-    // failure that is embarrassing rather than merely broken. Checked unescaped: the
-    // draft's `body` is markdown, where the brackets come through as \[MONTH\].
-    const unfilled = FILL_VARIABLES
-      .map(v => '[' + v.key + ']')
-      .filter(t => String(body).replace(/\\/g, '').includes(t) || composerText.includes(t));
-    if (unfilled.length) throw new Error('Unfilled token(s) in the reply: ' + unfilled.join(', '));
-
-    const to = await recipientP;
-    if (!to) throw new Error('No recipient address for this conversation');
-
-    status('Sending…');
-    await kustomerUpdateDraft(draft.id, {
-      body,
-      channel: 'email',
-      from: { email: KUSTOMER_REPLY_FROM },
-      to: [{ email: to }],
-      sendAt: new Date().toISOString(),
-      payload,
-      template: KUSTOMER_REPLY_TEMPLATE,
-      app: KUSTOMER_REPLY_APP,
-    });
-    // composerText is the agent's copy as they saw it on screen; `body` is the
-    // markdown serialization that went to Kustomer. The log wants the former to
-    // compare against the macro, and the latter as the record of what was sent.
-    return { to, body, composerText, draftId: draft.id };
-  }
-
-  /** After an API send the composer still shows the reply: the send went around
-   *  Kustomer's editor, so its in-memory draft never learned the text went out.
-   *  Clear it through Kustomer's own discard (trash → "Yes, discard") so its store
-   *  resets too — wiping the editor ourselves would leave Kustomer autosaving into
-   *  a draft that no longer exists.
-   *
-   *  Waits until the server has dropped the sent draft first: the send is a PUT with
-   *  `sendAt`, and discarding before Kustomer consumes it could delete the email with
-   *  it. Then only acts while the same conversation is open and the composer still
-   *  holds exactly what went out, so nothing the agent typed since is ever lost.
-   *  Returns true when the composer ends up clear. */
-  async function clearComposerAfterSend({ conversationId, draftId, sentText, timeoutMs = 15000 }) {
-    // Not kustomerGetConversationDraft: it reads a failed GET as "no draft", and a
-    // false "gone" here is the one mistake that could cancel the send.
-    const draftStillThere = async () => {
-      const res = await fetch(
-        `${KUSTOMER_API_BASE}/v1/conversations/${conversationId}/drafts?client-request-id=${_aiUuid()}`,
-        { credentials: 'include', headers: _aiHeaders() },
-      );
-      if (!res.ok) throw new Error('drafts ' + res.status);
-      return ((await res.json())?.data || []).some(d => d.id === draftId);
-    };
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      try { if (!(await draftStillThere())) break; } catch (_) {}
-      if (Date.now() > deadline) return false;
-      await _sleep(500);
-    }
-
-    if (getConversationIdFromURL() !== conversationId) return false;
-    const composer = getComposer();
-    const current = _normReplyText(composer?.innerText || '');
-    if (!current) return true;
-    if (current !== _normReplyText(sentText || '')) return false;
-
-    // Nearest trash icon walking up from the editor is the reply box's own toolbar.
-    let trash = null;
-    for (let n = composer.parentElement, i = 0; n && !trash && i < 14; n = n.parentElement, i++) {
-      trash = n.querySelector('svg[data-icon="trash"]')?.closest('button') || null;
-    }
-    if (!trash) return false;
-    trash.click();
-
-    let yes = null;
-    const until = Date.now() + 3000;
-    while (!yes && Date.now() < until) {
-      const dlg = [...document.querySelectorAll('.ReactModalPortal [role="dialog"]')]
-        .find(x => /discard draft/i.test(x.innerText || ''));
-      yes = dlg ? [...dlg.querySelectorAll('button')].find(b => /^yes,?\s*discard$/i.test((b.innerText || '').trim())) : null;
-      if (!yes) await _sleep(100);
-    }
-    if (yes) { yes.click(); await _sleep(300); }
-    return !getComposer();
   }
 
   /** Fill the macro vars we can resolve. customer.firstName + currentUser.displayName
